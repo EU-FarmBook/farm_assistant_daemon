@@ -14,6 +14,7 @@ from app.routers.tools import router as tools_router
 from app.security import path_requires_key, resolve_api_key_label
 from app.services.hermes_client import health as hermes_health
 from app.services.profile_registry import gate_description, pilot_size
+from app.services.provisioning import profile_count, refresh_all_profiles
 
 S = get_settings()
 logging.basicConfig(level=getattr(logging, S.LOG_LEVEL.upper(), logging.INFO))
@@ -39,6 +40,13 @@ async def lifespan(_app: FastAPI):
 
     # A pilot with an empty roster answers nobody; better to see it in the logs
     # at boot than to debug a wall of 403s.
+    # Reconcile existing profiles with the current template before serving, so
+    # a deploy takes effect at once rather than per-user on first message.
+    refreshed = refresh_all_profiles()
+    logger.info(
+        "Profiles: %d total, %d refreshed from the current template",
+        profile_count(), refreshed,
+    )
     logger.info("Pilot gate: %s", gate_description())
     logger.info("Auth realm: %s", S.AUTH_BACKEND_URL or S.CHAT_BACKEND_URL)
     if not S.MISTRAL_API_KEY:

@@ -201,3 +201,27 @@ def test_soul_change_reaches_existing_profiles(configured, volume):
 
     # A profile holding an older SOUL.md is a profile running older rules.
     assert (volume / "profiles" / UUID_A / "SOUL.md").read_text() == "# updated scope contract\n"
+
+
+def test_startup_refresh_updates_every_stale_profile(configured, volume):
+    provisioning.ensure_profile(UUID_A)
+    provisioning.ensure_profile(UUID_B)
+
+    template = volume / "config.yaml"
+    template.write_text("model:\n  provider: fixed\n" + template.read_text(), encoding="utf-8")
+
+    # A deploy should reconcile on-disk state immediately, not lazily when each
+    # user next happens to send a message.
+    assert provisioning.refresh_all_profiles() == 2
+    for uid in (UUID_A, UUID_B):
+        assert "provider: fixed" in (volume / "profiles" / uid / "config.yaml").read_text()
+
+    # Idempotent: nothing stale, nothing rewritten.
+    assert provisioning.refresh_all_profiles() == 0
+
+
+def test_startup_refresh_survives_a_broken_profile(configured, volume):
+    provisioning.ensure_profile(UUID_A)
+    (volume / "profiles" / "junk").mkdir()          # not a profile at all
+    (volume / "profiles" / UUID_A / ".env").unlink()  # half-provisioned
+    assert provisioning.refresh_all_profiles() >= 0   # must not raise

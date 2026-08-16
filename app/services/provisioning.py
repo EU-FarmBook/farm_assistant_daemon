@@ -247,6 +247,40 @@ def ensure_profile(profile: str) -> bool:
     return True
 
 
+def refresh_all_profiles() -> int:
+    """
+    Re-render every existing profile from the current template. Returns the
+    number refreshed.
+
+    Called at startup so a deploy reconciles on-disk state immediately instead
+    of lazily, one user's first turn at a time. Without it, `git pull` +
+    `compose up` leaves every profile on the previous template until its owner
+    happens to send a message — which reads, correctly, as "the fix did not
+    work".
+
+    Never raises: a profile that cannot be refreshed must not stop the service
+    from starting. It will be retried on that user's next turn.
+    """
+    root = _data_dir() / "profiles"
+    if not root.is_dir():
+        return 0
+
+    refreshed = 0
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        try:
+            if not is_provisioned(entry.name):
+                continue
+            if _config_is_current(entry.name):
+                continue
+            ensure_profile(entry.name)
+            refreshed += 1
+        except Exception as e:  # noqa: BLE001 - startup must survive anything here
+            logger.error("Could not refresh profile %s: %s", entry.name, e)
+    return refreshed
+
+
 def profile_name_for(user_uuid: str, override: Optional[str] = None) -> str:
     """
     Deterministic profile id for a user.
