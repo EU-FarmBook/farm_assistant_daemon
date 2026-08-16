@@ -162,7 +162,11 @@ def test_profile_gets_its_own_env_with_the_scoped_keys(configured, volume, monke
     assert env.is_file()
     text = env.read_text()
     assert "API_SERVER_KEY=bridge-key" in text
-    assert "MISTRAL_API_KEY=mistral-key" in text
+    # `provider: custom` reads OPENAI_* — "mistral" is not a Hermes provider id,
+    # and setting it returns "Unknown provider" AS THE ANSWER, which streams as
+    # an empty completion and looks like a broken UI.
+    assert "OPENAI_API_KEY=mistral-key" in text
+    assert "OPENAI_BASE_URL=https://api.mistral.ai/v1" in text
     assert env.stat().st_mode & 0o777 == 0o600
 
 

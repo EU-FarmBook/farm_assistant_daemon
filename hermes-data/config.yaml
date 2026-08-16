@@ -25,12 +25,18 @@ _config_version: 37
 # why the pilot is internal-only. Moving back in-house means `provider: custom`
 # + OPENAI_BASE_URL at a vLLM serving with
 # `--enable-auto-tool-choice --tool-call-parser hermes` and `--max-model-len 65536`.
+# `mistral` is NOT a Hermes provider id — it is absent from PROVIDER_REGISTRY,
+# and setting it yields "Unknown provider 'mistral'" as the assistant's answer
+# (streamed as an empty completion, which looks like a broken UI rather than a
+# config error). Mistral's API is OpenAI-compatible, so it is reached through
+# `custom` + OPENAI_BASE_URL/OPENAI_API_KEY, which is the same seam the A40
+# would use. `hermes model` lists the real provider ids.
 model:
-  provider: mistral
+  provider: custom
   default: mistral-large-latest
 
 fallback_providers:
-  - provider: mistral
+  - provider: custom
     model: mistral-medium-latest
 
 # ── Memory: OFF, deliberately ─────────────────────────────────────────

@@ -80,7 +80,11 @@ def _render_profile_env() -> str:
         f"API_SERVER_KEY={S.HERMES_API_KEY}",
     ]
     if S.MISTRAL_API_KEY:
-        lines.append(f"MISTRAL_API_KEY={S.MISTRAL_API_KEY}")
+        # `provider: custom` in config.yaml reads OPENAI_* — Mistral is not a
+        # Hermes provider id, it is an OpenAI-compatible endpoint reached this
+        # way. Same seam a self-hosted vLLM would use.
+        lines.append(f"OPENAI_BASE_URL={S.MISTRAL_API_URL}/v1")
+        lines.append(f"OPENAI_API_KEY={S.MISTRAL_API_KEY}")
     else:
         logger.warning(
             "MISTRAL_API_KEY is unset — provisioned profiles will have no provider "
@@ -113,10 +117,13 @@ def _config_is_current(profile: str) -> bool:
         env = (directory / ".env").read_text(encoding="utf-8")
     except OSError:
         return False
-    return (
+    fresh = (
         f'EUF_BRIDGE_KEY: "{S.HERMES_API_KEY}"' in current
         and f"API_SERVER_KEY={S.HERMES_API_KEY}" in env
     )
+    if fresh and S.MISTRAL_API_KEY:
+        fresh = f"OPENAI_API_KEY={S.MISTRAL_API_KEY}" in env
+    return fresh
 
 
 def _render_config(profile: str) -> str:

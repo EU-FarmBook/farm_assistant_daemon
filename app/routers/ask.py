@@ -190,6 +190,21 @@ async def stream_message(
                 yield await emit("sources", [])
                 yield await emit("grounding", {"mode": "general_fallback"})
 
+            if not answer.strip():
+                # An agent that completes with no text is a failure wearing a
+                # success: the UI renders an empty bubble and Django then 400s
+                # the turn log (it requires both messages non-empty). It is how
+                # "Unknown provider" surfaced — as silence. Say so instead.
+                logger.error(
+                    "Empty completion for profile=%s — check the agent's provider config",
+                    profile,
+                )
+                yield await emit(
+                    "app_error",
+                    {"message": "The assistant returned an empty answer. Please try again."},
+                )
+                return
+
             yield await emit("final", {"answer": answer})
             yield await emit("timing", {"total_ms": int((time.monotonic() - started) * 1000)})
             yield await emit("done", {"ok": True})
