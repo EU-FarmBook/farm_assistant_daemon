@@ -109,3 +109,22 @@ def test_chat_paths_require_a_key():
     # Preflight and health stay open, or the browser and the orchestrator break.
     assert not path_requires_key("/chatbot/api/chats/message/stream", "OPTIONS")
     assert not path_requires_key("/health", "GET")
+
+
+# --- Fail-closed auth ----------------------------------------------------
+
+def test_blank_backend_resolves_from_fa_env_not_to_nothing():
+    # A blank backend URL makes auth_service trust an UNVERIFIED JWT decode, so
+    # it must never stay blank. farm_assistant_um resolves it from FA_ENV; this
+    # service must do the same or a deployment silently accepts forged tokens.
+    assert Settings(FA_ENV="prd", _env_file=None).CHAT_BACKEND_URL == (
+        "https://backend-admin.prd.farmbook.ugent.be"
+    )
+    assert Settings(FA_ENV="dev", _env_file=None).CHAT_BACKEND_URL == (
+        "https://backend-admin.dev.farmbook.ugent.be"
+    )
+
+
+def test_auth_is_verified_reports_the_kill_switch():
+    assert Settings(FA_ENV="prd", _env_file=None).auth_is_verified()
+    assert not Settings(FA_ENV="prd", AUTH_TOKEN_INTROSPECTION=False, _env_file=None).auth_is_verified()

@@ -118,11 +118,30 @@ class Settings(BaseSettings):
     )
 
     def model_post_init(self, __context) -> None:
+        # Resolve a blank backend URL from FA_ENV, exactly as farm_assistant_um
+        # does. This is not a convenience: with no backend URL, auth_service
+        # falls back to an UNVERIFIED JWT decode, so a blank value on a public
+        # host would let anyone forge a token carrying a rostered uuid and reach
+        # that user's agent and memory. See also the startup check in main.py,
+        # which refuses to run non-local without introspection.
+        backend_by_env = {
+            "local": "http://127.0.0.1:8000",
+            "dev": "https://backend-admin.dev.farmbook.ugent.be",
+            "prd": "https://backend-admin.prd.farmbook.ugent.be",
+        }
+        if not self.CHAT_BACKEND_URL:
+            env = (self.FA_ENV or "local").lower()
+            self.CHAT_BACKEND_URL = backend_by_env.get(env, backend_by_env["local"])
+
         for attr in ("CHAT_BACKEND_URL", "AUTH_BACKEND_URL", "OPENSEARCH_API_URL",
                      "HERMES_API_URL", "PLATFORM_PUBLIC_URL"):
             value = getattr(self, attr, "") or ""
             if value:
                 setattr(self, attr, value.rstrip("/"))
+
+    def auth_is_verified(self) -> bool:
+        """True when tokens are actually introspected rather than trusted."""
+        return bool(self.AUTH_TOKEN_INTROSPECTION and (self.AUTH_BACKEND_URL or self.CHAT_BACKEND_URL))
 
     def api_keys_map(self) -> dict[str, str]:
         """

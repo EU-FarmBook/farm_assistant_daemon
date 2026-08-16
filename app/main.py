@@ -21,12 +21,27 @@ logger = logging.getLogger("farm-assistant-hermes")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # A pilot with no profile map answers nobody; better to see it in the logs at
-    # boot than to debug a wall of 403s.
+    # Fail closed rather than serve unverified identities.
+    #
+    # With introspection off or no auth backend, auth_service falls back to
+    # decoding the JWT WITHOUT verifying it — fine for bare local dev against a
+    # stubbed Django, catastrophic on a public host: the uuid is the only thing
+    # deciding which agent and whose memory a request reaches, so an unverified
+    # one lets anyone forge their way into a pilot user's profile. Refuse to
+    # start instead of running in that state.
+    if (S.FA_ENV or "local").lower() != "local" and not S.auth_is_verified():
+        raise RuntimeError(
+            "Refusing to start: FA_ENV=%s but token introspection is not configured "
+            "(AUTH_TOKEN_INTROSPECTION=%s, backend=%r). Tokens would be trusted "
+            "without verification." % (S.FA_ENV, S.AUTH_TOKEN_INTROSPECTION,
+                                       S.AUTH_BACKEND_URL or S.CHAT_BACKEND_URL)
+        )
+
+    # A pilot with an empty roster answers nobody; better to see it in the logs
+    # at boot than to debug a wall of 403s.
     if not pilot_size():
-        logger.warning("HERMES_PROFILE_MAP is empty — every chat request will be refused.")
-    if not S.CHAT_BACKEND_URL:
-        logger.warning("CHAT_BACKEND_URL is unset — auth introspection and memory are disabled.")
+        logger.warning("HERMES_PILOT_UUIDS is empty — every chat request will be refused.")
+    logger.info("Auth realm: %s", S.AUTH_BACKEND_URL or S.CHAT_BACKEND_URL)
     if not S.MISTRAL_API_KEY:
         logger.info("MISTRAL_API_KEY unset — the memory summary will show its cached value only.")
     yield
