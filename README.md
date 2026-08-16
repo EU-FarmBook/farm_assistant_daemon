@@ -112,8 +112,35 @@ with the memory block in every call is a cost hazard, not a feature.
 
 `search_eu_farmbook` and `remember_about_user`, both reached through an MCP
 bridge that forwards to this adapter. No web, terminal, code execution,
-sandboxes, cron, kanban or file access. The agent holds no OpenSearch password
-and never sees a user JWT.
+sandboxes, cron or file access. The agent holds no OpenSearch password and never
+sees a user JWT.
+
+Verify rather than assume, with Hermes' own resolver:
+
+```bash
+docker run --rm -v "$PWD/hermes-data/config.yaml:/tmp/cfg.yaml:ro" \
+  --entrypoint python nousresearch/hermes-agent:latest -c "
+import sys, yaml; sys.path.insert(0, '/opt/hermes')
+from hermes_cli.tools_config import _get_platform_tools
+print(sorted(_get_platform_tools(yaml.safe_load(open('/tmp/cfg.yaml')), 'api_server')))"
+# -> ['eu-farmbook']
+```
+
+`platform_toolsets.api_server: []` is honoured as written: `_get_platform_tools`
+only falls back to platform defaults when the key is `None` or not a list, and an
+empty list is a list. If it ever fell back, the agent would silently gain the
+full default toolset — terminal included — so re-run the check after touching
+that block.
+
+**Expect this warning in the agent's logs, and ignore it:**
+
+> `API server is network-accessible (0.0.0.0) AND the terminal backend is
+> 'local' (unsandboxed).`
+
+It fires on the combination of bind address and terminal backend without
+checking whether the terminal toolset is enabled for the platform on that port.
+Ours is not (see above). `0.0.0.0` is required for the adapter to reach the agent
+across the compose network; the port stays unpublished and off `traefik-net`.
 
 ## Run it
 
