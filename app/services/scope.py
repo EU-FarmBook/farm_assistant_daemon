@@ -52,7 +52,11 @@ SOURCE_DEPENDENCE_RULE = (
     "returned. If the tool returns no passages, say plainly that EU-FarmBook has no material on the "
     "question rather than answering from your own knowledge; you may then add a brief, clearly "
     "labelled general-agricultural note if it genuinely helps. Never invent a citation, a document "
-    "title, a URL, or a figure."
+    "title, a URL, or a figure. "
+    "NEVER state or imply that EU-FarmBook lacks material on something unless you have actually "
+    "called search_eu_farmbook in THIS turn and it came back empty. Saying the platform has nothing "
+    "without looking is a false claim about the platform, and worse than saying nothing at all — if "
+    "you have not searched, search before answering."
 )
 
 MEMORY_TOOL_RULE = (
