@@ -141,14 +141,16 @@ Hosted as `hermes.farm-assistant.nexavion.com`, alongside `farm-assistant.nexavi
 # on the host: docker compose pull && docker compose up -d
 ```
 
-Neither container publishes a port. The reverse proxy terminates TLS and
-forwards to the **adapter** on 8100; the frontend sets
+Neither container publishes a port. Traefik terminates TLS and reaches the
+**adapter** over the shared external `traefik-net`, on 8100 — same label pattern
+as `farm_assistant` and its arena siblings on this host. The frontend sets
 `FARM_ASSISTANT_V3_API_URL` to that hostname and sends `X-API-Key`.
 
-**The agent's own port stays unpublished and unproxied.** `:8642` is the full
-capability surface behind one bearer key — if it is ever routable from outside,
-anyone holding that key can talk to any pilot user's agent. There is no reason
-to expose it; debug through `docker compose exec`.
+**The agent is on the internal network only**, with `traefik.enable=false` and no
+membership of `traefik-net`. `:8642` is its full capability surface behind one
+bearer key — anyone reaching it could talk to any pilot user's agent. The adapter
+is deliberately the only container on both networks: it is the boundary. Debug
+the agent through `docker compose exec`, never by exposing it.
 
 Checklist before the first pilot user:
 

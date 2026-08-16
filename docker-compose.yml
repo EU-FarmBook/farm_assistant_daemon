@@ -47,7 +47,14 @@ services:
     security_opt:
       - no-new-privileges:true
 
+    # Internal network ONLY — deliberately not on traefik-net. The agent must not
+    # be routable from outside under any hostname: :8642 is its entire
+    # capability surface behind one bearer key, and anyone reaching it could talk
+    # to any pilot user's agent. The explicit disable is belt-and-braces in case
+    # Traefik is ever switched to exposedByDefault.
     networks: [euf-hermes]
+    labels:
+      - "traefik.enable=false"
 
     deploy:
       resources:
@@ -89,9 +96,8 @@ services:
       # needs no docker socket and no shell into the agent container.
       - ./hermes-data:/opt/data
 
-    # No published ports, same convention as farm_assistant_um: on nexavion the
-    # reverse proxy terminates TLS for hermes.farm-assistant.nexavion.com and
-    # forwards to this container on 8100. For a local stack, uncomment:
+    # No published ports: Traefik terminates TLS and reaches this container over
+    # traefik-net. For a local stack without Traefik, uncomment:
     # ports:
     #   - "127.0.0.1:8100:8100"
     expose:
@@ -107,7 +113,22 @@ services:
     security_opt:
       - no-new-privileges:true
 
-    networks: [euf-hermes]
+    # Two networks, and the split is the point: traefik-net carries public
+    # traffic in, euf-hermes carries agent traffic that must never leave the
+    # stack. The adapter is the only member of both — it is the boundary.
+    networks: [euf-hermes, traefik-net]
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fa-hermes.rule=Host(`hermes.farm-assistant.nexavion.com`)"
+      - "traefik.http.routers.fa-hermes.entrypoints=websecure"
+      - "traefik.http.routers.fa-hermes.tls=true"
+      - "traefik.http.routers.fa-hermes.tls.certresolver=letsencrypt"
+      - "traefik.http.services.fa-hermes.loadbalancer.server.port=8100"
+      # Pin the router to this service. With two networks attached, Traefik
+      # cannot always guess which one to dial, and an unpinned service can end
+      # up unreachable with a confusing 502.
+      - "traefik.docker.network=traefik-net"
 
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8100/health"]
@@ -117,5 +138,10 @@ services:
       start_period: 20s
 
 networks:
+  # Private to this stack: adapter <-> agent only.
   euf-hermes:
     driver: bridge
+  # Created and owned by the Traefik stack; shared with every other service on
+  # this host (farm_assistant, scout, ...). Never `docker network rm` it.
+  traefik-net:
+    external: true
