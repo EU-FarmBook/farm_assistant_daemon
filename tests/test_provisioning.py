@@ -124,3 +124,26 @@ def test_missing_template_is_a_hard_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(provisioning, "get_settings", lambda: s)
     with pytest.raises(provisioning.ProvisioningError):
         provisioning.ensure_profile(UUID_A)
+
+
+def test_stale_bridge_key_is_repaired_in_place(configured, volume, monkeypatch):
+    profile_registry.resolve_profile(UUID_A)
+    config = volume / "profiles" / UUID_A / "config.yaml"
+    assert 'EUF_BRIDGE_KEY: "bridge-key"' in config.read_text()
+
+    # Mark the profile as having some state, so we can prove it survives.
+    (volume / "profiles" / UUID_A / "sessions" / "keep.json").write_text("{}", encoding="utf-8")
+
+    # The operator corrects HERMES_API_KEY to match API_SERVER_KEY.
+    rotated = Settings(HERMES_PILOT_UUIDS=f"{UUID_A},{UUID_B}", HERMES_DATA_DIR=str(volume),
+                       HERMES_API_KEY="corrected-key", _env_file=None)
+    monkeypatch.setattr(provisioning, "S", rotated)
+    monkeypatch.setattr(provisioning, "get_settings", lambda: rotated)
+    monkeypatch.setattr(profile_registry, "get_settings", lambda: rotated)
+
+    profile_registry.resolve_profile(UUID_A)
+
+    # Config repaired, state untouched — otherwise every tool call would 401
+    # against the adapter with no visible cause.
+    assert 'EUF_BRIDGE_KEY: "corrected-key"' in config.read_text()
+    assert (volume / "profiles" / UUID_A / "sessions" / "keep.json").is_file()

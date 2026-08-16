@@ -57,6 +57,23 @@ def is_provisioned(profile: str) -> bool:
     return (profile_dir(profile) / "config.yaml").is_file()
 
 
+def _config_is_current(profile: str) -> bool:
+    """
+    Does this profile's config still match what we would write today?
+
+    The bridge key is the part that rots: EUF_BRIDGE_KEY is baked into each
+    profile at provisioning time, so rotating HERMES_API_KEY (or correcting a
+    mismatch with API_SERVER_KEY) silently invalidates every existing profile —
+    the agent keeps answering, but every tool call 401s against the adapter, and
+    the only symptom is an assistant that has mysteriously stopped searching.
+    """
+    try:
+        current = (profile_dir(profile) / "config.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f'EUF_BRIDGE_KEY: "{S.HERMES_API_KEY}"' in current
+
+
 def _render_config(profile: str) -> str:
     """
     Fill the shared config template for one profile.
@@ -95,6 +112,14 @@ def ensure_profile(profile: str) -> bool:
     """
     target = profile_dir(profile)
     if is_provisioned(profile):
+        if not _config_is_current(profile):
+            # Repair in place rather than refusing or rebuilding: the profile's
+            # sessions and agent state are fine, only the rendered config is stale.
+            try:
+                (target / "config.yaml").write_text(_render_config(profile), encoding="utf-8")
+                logger.warning("Refreshed stale config for profile %s (bridge key changed)", profile)
+            except OSError as e:
+                raise ProvisioningError(f"could not refresh config for {profile}: {e}") from e
         return False
 
     # Disk and blast-radius ceiling under open access. Existing users are
