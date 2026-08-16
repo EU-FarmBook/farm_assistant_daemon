@@ -46,10 +46,12 @@ SCOPE_RULE = (
 )
 
 SOURCE_DEPENDENCE_RULE = (
-    "Ground every substantive answer in EU-FarmBook material. Call the search_eu_farmbook tool "
-    "before answering a question that asks for facts, figures, practices, regulations, or project "
-    "information, and cite the passages you used as [1], [2], ... matching the numbering the tool "
-    "returned. If the tool returns no passages, say plainly that EU-FarmBook has no material on the "
+    "Ground every substantive answer in EU-FarmBook material. EU-FarmBook passages are usually "
+    "retrieved for you and arrive numbered with the question — use those first, and cite what you "
+    "use as [1], [2], ... exactly as numbered. Call the search_eu_farmbook tool yourself whenever "
+    "they do not cover the question, are a poor match, or the question has a second part they miss; "
+    "new passages continue the same numbering. Also call it when no passages were provided at all "
+    "and the question asks for facts, figures, practices, regulations, or project information. If the tool returns no passages, say plainly that EU-FarmBook has no material on the "
     "question rather than answering from your own knowledge; you may then add a brief, clearly "
     "labelled general-agricultural note if it genuinely helps. Never invent a citation, a document "
     "title, a URL, or a figure. "

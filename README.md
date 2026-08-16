@@ -110,6 +110,30 @@ removed from the Farm Assistant on a locked decision — brittle, and English-on
 on a 24-language platform. Enforcement is LLM-first; deterministic code may
 accelerate or defer, never reject.
 
+## Retrieve first, then let the agent search again
+
+v2 retrieves before it generates, so it cannot answer ungrounded. A pure agent
+decides for itself — and sometimes does not look at all, which produced an answer
+asserting EU-FarmBook had no material on pig manure without a single search
+having run. v3 therefore keeps v2's floor and adds to it:
+
+1. Every substantive turn (anything over `_PREFETCH_MIN_CHARS`) is retrieved for
+   before the model runs, through **the same `search_eu_farmbook` the agent
+   calls** — so pre-retrieved and agent-retrieved passages share one citation
+   register and one numbering.
+2. The passages arrive numbered, with their **quality verdict**. Where v2
+   silently drops a weak set and answers anyway, v3 says it was weak and asks the
+   agent to re-query with tighter terms.
+3. The agent can search again for a second part of a question, or a better angle.
+   Later hops continue the numbering, so `[1]` never changes meaning mid-answer.
+4. A short follow-up ("and for maize?") is retrieved with the previous user turn
+   prepended — a bare anaphor retrieves nothing useful. v2 spends an LLM call
+   resolving this; here a heuristic is enough because the agent can re-query when
+   it guesses wrong.
+
+Greetings skip the search on length alone, never a keyword list — those are
+brittle and English-only, which is why v2's were removed.
+
 ## Multi-hop retrieval: the citation register
 
 The agent decides whether and how often to search, so a turn can contain several

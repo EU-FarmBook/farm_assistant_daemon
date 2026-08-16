@@ -40,6 +40,35 @@ _MAX_HISTORY_MESSAGES = 20
 _MAX_HISTORY_CHARS = 12000
 
 
+# A message this short is a greeting, a "thanks", or a one-word aside in any
+# language. Below it, pre-retrieval is deferred — the agent can still search if
+# it turns out to matter. Length, not keywords: a word list would be brittle and
+# English-only, which is exactly why v2's were removed.
+_PREFETCH_MIN_CHARS = 15
+
+
+def _search_query(question: str, history: List[Dict[str, str]]) -> str:
+    """
+    The query to pre-retrieve with.
+
+    A follow-up like "and for maize?" is meaningless to a retriever on its own,
+    so the previous user turn is prepended when the question looks like it leans
+    on context. v2 spends an LLM call resolving this properly; here the agent
+    can re-query if the cheap heuristic guesses wrong, so a heuristic is the
+    right trade.
+    """
+    question = question.strip()
+    previous = next(
+        (m["content"] for m in reversed(history) if m.get("role") == "user"),
+        "",
+    )
+    if not previous:
+        return question
+    if len(question) <= 60:
+        return f"{previous.strip()} {question}"[:500]
+    return question
+
+
 def _parse_client_history(raw: Optional[str]) -> List[Dict[str, str]]:
     if not raw:
         return []
@@ -147,8 +176,52 @@ async def stream_message(
             messages: List[Dict[str, str]] = [
                 {"role": "system", "content": system_prompt(memory_block or None)}
             ]
-            if replace_history:
-                messages.extend(_parse_client_history(client_history))
+            history = _parse_client_history(client_history) if replace_history else []
+            if history:
+                messages.extend(history)
+
+            # --- Retrieve first, then let the agent search again -------------
+            #
+            # v2 retrieves before generating and therefore cannot answer
+            # ungrounded; a pure agent decides for itself and sometimes does not
+            # look at all — which is how an answer came to assert EU-FarmBook had
+            # nothing on pig manure without a single search. This restores v2's
+            # floor: every substantive turn starts with real passages.
+            #
+            # It goes through the SAME tool the agent calls, so passages land in
+            # one citation register and a later agent hop continues the numbering
+            # instead of restarting it.
+            sources_block = ""
+            if len(q.strip()) >= _PREFETCH_MIN_CHARS:
+                yield await emit(
+                    "status", {"stage": "search", "message": "Searching EU-FarmBook..."}
+                )
+                prefetch = await tool_server.search_eu_farmbook(
+                    _search_query(q, history), profile=profile
+                )
+                passages = prefetch.get("passages") or []
+                if passages:
+                    numbered = "\n\n".join(f"[{p['n']}] {p['text']}" for p in passages)
+                    quality = (prefetch.get("quality") or {}).get("verdict", "unknown")
+                    sources_block = (
+                        "EU-FarmBook passages retrieved for this question:\n\n"
+                        f"{numbered}\n\n"
+                        f"(Relevance of this set: {quality}.)"
+                        + (
+                            " These look like a poor match — search again with more "
+                            "specific terms before answering, and say so plainly if it "
+                            "stays weak."
+                            if quality == "weak" else ""
+                        )
+                        + "\nCite what you use by these numbers. Search again with "
+                        "search_eu_farmbook if they do not cover the question.\n\n"
+                    )
+                else:
+                    sources_block = (
+                        "A search of EU-FarmBook for this question returned nothing. "
+                        "Try one more search with different terms before concluding "
+                        "the platform has no material on it.\n\n"
+                    )
             # Attached documents ride with the question as user-provided
             # material, explicitly not as platform sources — the agent cites
             # EU-FarmBook by number, and an uploaded file must never be
@@ -161,7 +234,7 @@ async def stream_message(
                 if attached:
                     question = f"{attached}\n\n{q}"
 
-            messages.append({"role": "user", "content": question})
+            messages.append({"role": "user", "content": f"{sources_block}{question}"})
 
             async for delta in stream_chat(
                 profile=profile,
