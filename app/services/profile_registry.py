@@ -4,10 +4,12 @@ uuid -> Hermes profile, and the pilot allowlist.
 
 Two separate questions, deliberately answered by different mechanisms:
 
-**Is this user allowed?** `HERMES_PILOT_UUIDS` — an explicit roster. A uuid that
-is not on it is refused. There is no "default profile" fallback and there must
-never be one: Hermes' agent state is per profile home, so two users sharing a
-profile share their sessions and anything the agent writes.
+**Is this user allowed?** Three ways to say yes, checked in order — an email
+domain (`HERMES_PILOT_EMAIL_DOMAINS`), a roster file that is re-read without a
+restart (`HERMES_PILOT_ROSTER_FILE`), or the static `HERMES_PILOT_UUIDS`. If none
+of them is configured, nobody is allowed: this fails closed, never open. There is
+also no "default profile" fallback and there must never be one, since Hermes'
+agent state is per profile home.
 
 **Does their agent exist yet?** Not a question the operator should have to
 answer. The profile is created on first use by `provisioning.ensure_profile()`,
@@ -20,6 +22,7 @@ names (`uuid:alice`); it is now a naming override, not the roster.
 
 import logging
 import re
+import time
 from typing import Optional
 
 from app.config import get_settings
@@ -32,6 +35,12 @@ logger = logging.getLogger("farm-assistant-hermes.profiles")
 # id becomes a URL path segment and a directory name, so anything outside this
 # charset must never reach either.
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# Roster-file cache. Short TTL: long enough that a busy stream is not stat-ing a
+# file per turn, short enough that adding a user feels immediate.
+_ROSTER_TTL_SECONDS = 30.0
+_file_roster_cache: Optional[set[str]] = None
+_file_roster_read_at: float = 0.0
 
 
 class ProfileNotProvisioned(Exception):
@@ -47,7 +56,7 @@ def is_valid_profile_name(name: str) -> bool:
     return bool(name) and bool(_PROFILE_RE.match(name))
 
 
-def _roster() -> set[str]:
+def _static_roster() -> set[str]:
     settings = get_settings()
     listed = {
         entry.strip()
@@ -59,11 +68,78 @@ def _roster() -> set[str]:
     return listed | set(settings.profile_map())
 
 
-def is_pilot_user(user_uuid: Optional[str]) -> bool:
-    return bool(user_uuid) and user_uuid in _roster()
+def _file_roster() -> set[str]:
+    """
+    Uuids from HERMES_PILOT_ROSTER_FILE, re-read on a short TTL.
+
+    The point is operational: adding someone becomes `echo <uuid> >> roster.txt`
+    on the server, with no container restart and no redeploy. Blank lines and
+    `#` comments are ignored so the file can carry names next to the uuids.
+    """
+    settings = get_settings()
+    path = (settings.HERMES_PILOT_ROSTER_FILE or "").strip()
+    if not path:
+        return set()
+
+    global _file_roster_cache, _file_roster_read_at
+    now = time.monotonic()
+    if _file_roster_cache is not None and (now - _file_roster_read_at) < _ROSTER_TTL_SECONDS:
+        return _file_roster_cache
+
+    entries: set[str] = set()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                entry = line.split("#", 1)[0].strip()
+                if entry:
+                    entries.add(entry)
+    except FileNotFoundError:
+        logger.warning("Roster file %s does not exist yet", path)
+    except OSError as e:
+        # Keep the last good roster rather than locking everyone out on a
+        # transient read error.
+        logger.error("Could not read roster file %s: %s", path, e)
+        return _file_roster_cache or set()
+
+    _file_roster_cache, _file_roster_read_at = entries, now
+    return entries
 
 
-def resolve_profile(user_uuid: Optional[str], *, provision: bool = True) -> str:
+def _allowed_domains() -> set[str]:
+    return {
+        d.strip().lower().lstrip("@")
+        for d in (get_settings().HERMES_PILOT_EMAIL_DOMAINS or "").split(",")
+        if d.strip()
+    }
+
+
+def is_pilot_user(user_uuid: Optional[str], email: Optional[str] = None) -> bool:
+    """
+    Membership test.
+
+    `email` must come from a token that has already been VERIFIED by
+    auth_service — the claims of a verified token are the issuer's, so acting on
+    them is safe; acting on an unverified one would let a caller pick their own
+    domain.
+    """
+    if not user_uuid:
+        return False
+
+    domains = _allowed_domains()
+    if domains and email:
+        domain = email.rsplit("@", 1)[-1].lower()
+        if domain in domains:
+            return True
+
+    return user_uuid in (_static_roster() | _file_roster())
+
+
+def resolve_profile(
+    user_uuid: Optional[str],
+    *,
+    email: Optional[str] = None,
+    provision: bool = True,
+) -> str:
     """
     Return the Hermes profile for a VERIFIED user uuid, creating it if needed.
 
@@ -74,8 +150,10 @@ def resolve_profile(user_uuid: Optional[str], *, provision: bool = True) -> str:
     if not user_uuid:
         raise ProfileNotProvisioned("<anonymous>", "not authenticated")
 
-    if not is_pilot_user(user_uuid):
-        # The normal case for everyone outside the pilot, so info, not error.
+    if not is_pilot_user(user_uuid, email):
+        # Logged at info with the uuid so an operator can add someone by having
+        # them click the link once and copying the uuid out of the logs — the
+        # uuid is otherwise awkward to find.
         logger.info("Rejecting chat for uuid=%s (not on roster)", user_uuid)
         raise ProfileNotProvisioned(user_uuid)
 
@@ -102,4 +180,17 @@ def resolve_profile(user_uuid: Optional[str], *, provision: bool = True) -> str:
 
 
 def pilot_size() -> int:
-    return len(_roster())
+    """Explicitly-listed uuids. A domain rule admits users not counted here."""
+    return len(_static_roster() | _file_roster())
+
+
+def gate_description() -> str:
+    """One-line summary of how access is gated, for the startup log."""
+    parts = []
+    if _allowed_domains():
+        parts.append("domains=" + ",".join(sorted(_allowed_domains())))
+    if get_settings().HERMES_PILOT_ROSTER_FILE:
+        parts.append(f"roster_file={get_settings().HERMES_PILOT_ROSTER_FILE}")
+    if _static_roster():
+        parts.append(f"uuids={len(_static_roster())}")
+    return " ".join(parts) or "NOTHING CONFIGURED (all requests refused)"

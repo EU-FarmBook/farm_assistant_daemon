@@ -14,6 +14,7 @@
 # Note there are deliberately no memory files to track here, unlike mneme:
 # user memory lives in MySQL under django_euf_admin, never on this volume.
 hermes-data/*
+!hermes-data/.env.sample
 !hermes-data/config.yaml
 !hermes-data/SOUL.md
 !hermes-data/scripts/

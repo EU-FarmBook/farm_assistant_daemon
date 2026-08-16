@@ -13,7 +13,7 @@ from app.routers.sessions import router as sessions_router
 from app.routers.tools import router as tools_router
 from app.security import path_requires_key, resolve_api_key_label
 from app.services.hermes_client import health as hermes_health
-from app.services.profile_registry import pilot_size
+from app.services.profile_registry import gate_description, pilot_size
 
 S = get_settings()
 logging.basicConfig(level=getattr(logging, S.LOG_LEVEL.upper(), logging.INFO))
@@ -39,8 +39,7 @@ async def lifespan(_app: FastAPI):
 
     # A pilot with an empty roster answers nobody; better to see it in the logs
     # at boot than to debug a wall of 403s.
-    if not pilot_size():
-        logger.warning("HERMES_PILOT_UUIDS is empty — every chat request will be refused.")
+    logger.info("Pilot gate: %s", gate_description())
     logger.info("Auth realm: %s", S.AUTH_BACKEND_URL or S.CHAT_BACKEND_URL)
     if not S.MISTRAL_API_KEY:
         logger.info("MISTRAL_API_KEY unset — the memory summary will show its cached value only.")

@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.schemas import MemoryDocumentPatchIn, MemoryDocumentsOut
 from app.services import memory_service
-from app.services.auth_service import resolve_user_uuid
+from app.services.auth_service import decode_token_email, resolve_user_uuid
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
 
 logger = logging.getLogger("farm-assistant-hermes.memory-api")
@@ -37,7 +37,7 @@ async def _caller(request: Request) -> tuple[str, str, str]:
     if not user_uuid:
         raise HTTPException(status_code=401, detail="Authentication required.")
     try:
-        profile = resolve_profile(user_uuid)
+        profile = resolve_profile(user_uuid, email=decode_token_email(auth_token))
     except ProfileNotProvisioned:
         raise HTTPException(status_code=403, detail="This experimental assistant is limited to the pilot group.")
     return auth_token, user_uuid, profile

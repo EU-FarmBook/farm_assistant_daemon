@@ -83,9 +83,21 @@ class Settings(BaseSettings):
     HERMES_REQUEST_TIMEOUT_SECONDS: float = 180.0
 
     # --- Pilot roster and profiles -------------------------------------------
-    # THE ALLOWLIST: comma-separated user uuids. A uuid absent from it is
-    # refused, never served by a shared agent. Membership is deliberately
-    # manual — the profile itself is created automatically on first use.
+    # THREE ways to admit a user, checked in this order. Configure at least one
+    # or nobody gets in — the gate fails closed, never open. The profile itself
+    # is always created automatically on first use.
+    #
+    # 1. Email domains, comma-separated (`ugent.be,nexavion.com`). Least
+    #    maintenance: nobody's uuid has to be looked up. Only applied when the
+    #    verified token actually carries an email claim — check the startup log.
+    HERMES_PILOT_EMAIL_DOMAINS: str = ""
+
+    # 2. A file of uuids, one per line (`#` comments allowed), re-read every 30s.
+    #    Adding someone is `echo <uuid> >> roster.txt` — no restart, no redeploy.
+    #    Put it on the mounted volume, e.g. /opt/data/pilot-roster.txt.
+    HERMES_PILOT_ROSTER_FILE: str = ""
+
+    # 3. Static list in this file. Requires a restart to change.
     HERMES_PILOT_UUIDS: str = ""
 
     # Optional `uuid:profile` naming overrides, for profiles seeded by hand with

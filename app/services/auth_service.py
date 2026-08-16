@@ -72,6 +72,46 @@ def decode_token_uuid(auth_header: Optional[str]) -> Optional[str]:
         return None
 
 
+def decode_token_claims(auth_header: Optional[str]) -> dict:
+    """
+    Return the JWT payload WITHOUT verifying it.
+
+    Only safe to act on for a token that resolve_user_uuid() has already
+    verified: introspection checks the signature, so the claims of a token that
+    passed are the issuer's, not the caller's. Never call this on its own to
+    make an access decision.
+    """
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return {}
+    token = auth_header[7:]
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return {}
+        payload = parts[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        data = json.loads(base64.urlsafe_b64decode(payload))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def decode_token_email(auth_header: Optional[str]) -> Optional[str]:
+    """
+    Best-effort email from a JWT. Claim naming varies by issuer, and these
+    tokens are minted by the public API rather than by this codebase, so try the
+    usual spellings and return None rather than guessing.
+    """
+    claims = decode_token_claims(auth_header)
+    for key in ("email", "user_email", "mail", "preferred_username", "username"):
+        value = claims.get(key)
+        if isinstance(value, str) and "@" in value:
+            return value.strip().lower()
+    return None
+
+
 def _auth_base_url() -> str:
     return (S.AUTH_BACKEND_URL or S.CHAT_BACKEND_URL or "").rstrip("/")
 

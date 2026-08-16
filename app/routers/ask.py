@@ -24,7 +24,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.config import get_settings
 from app.services import memory_service, tool_server
-from app.services.auth_service import resolve_user_uuid
+from app.services.auth_service import decode_token_email, resolve_user_uuid
 from app.services.hermes_client import HermesUnavailable, stream_chat
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
 from app.services.scope import system_prompt
@@ -85,7 +85,9 @@ async def stream_message(
         raise HTTPException(status_code=401, detail="Authentication required.")
 
     try:
-        profile = resolve_profile(user_uuid)
+        # Safe to read the email claim here and not before: resolve_user_uuid()
+        # has verified the token's signature, so its claims are the issuer's.
+        profile = resolve_profile(user_uuid, email=decode_token_email(auth_token))
     except ProfileNotProvisioned:
         # Deliberately explicit rather than a generic 403: everyone outside the
         # pilot will hit this, and "you are not in the pilot" is the useful thing
