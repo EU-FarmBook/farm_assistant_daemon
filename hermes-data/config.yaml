@@ -25,18 +25,32 @@ _config_version: 37
 # why the pilot is internal-only. Moving back in-house means `provider: custom`
 # + OPENAI_BASE_URL at a vLLM serving with
 # `--enable-auto-tool-choice --tool-call-parser hermes` and `--max-model-len 65536`.
-# `mistral` is NOT a Hermes provider id — it is absent from PROVIDER_REGISTRY,
-# and setting it yields "Unknown provider 'mistral'" as the assistant's answer
-# (streamed as an empty completion, which looks like a broken UI rather than a
-# config error). Mistral's API is OpenAI-compatible, so it is reached through
-# `custom` + OPENAI_BASE_URL/OPENAI_API_KEY, which is the same seam the A40
-# would use. `hermes model` lists the real provider ids.
+# Mistral is reached as a NAMED CUSTOM PROVIDER. Two dead ends first, so nobody
+# retries them:
+#
+#   provider: mistral  -> "Unknown provider 'mistral'". It is absent from
+#                         PROVIDER_REGISTRY; the error arrives as the
+#                         assistant's message content, and the streaming path
+#                         drops it entirely, so the UI just shows an empty bubble.
+#   provider: custom   -> reads model.base_url from config, NOT OPENAI_BASE_URL.
+#                         With no base_url it calls the default endpoint without
+#                         a key: "HTTP 401: Missing Authentication header".
+#
+# The supported shape (`_get_named_custom_provider`) is a `providers.<name>`
+# entry giving the endpoint, plus `key_env` naming the environment variable that
+# holds the credential. The key itself never appears in this file — the adapter
+# writes it into each profile's own .env.
+providers:
+  mistral:
+    base_url: https://api.mistral.ai/v1
+    key_env: MISTRAL_API_KEY
+
 model:
-  provider: custom
+  provider: custom:mistral
   default: mistral-large-latest
 
 fallback_providers:
-  - provider: custom
+  - provider: custom:mistral
     model: mistral-medium-latest
 
 # ── Memory: OFF, deliberately ─────────────────────────────────────────

@@ -165,9 +165,9 @@ def test_profile_gets_its_own_env_with_the_scoped_keys(configured, volume, monke
     # `provider: custom` reads OPENAI_* — "mistral" is not a Hermes provider id,
     # and setting it returns "Unknown provider" AS THE ANSWER, which streams as
     # an empty completion and looks like a broken UI.
-    assert "OPENAI_API_KEY=mistral-key" in text
-    assert "CUSTOM_API_KEY=mistral-key" in text
-    assert "OPENAI_BASE_URL=https://api.mistral.ai/v1" in text
+    # Must match `key_env` in the providers block of config.yaml — that pairing
+    # IS the named-custom-provider contract.
+    assert "MISTRAL_API_KEY=mistral-key" in text
     assert env.stat().st_mode & 0o777 == 0o600
 
 
