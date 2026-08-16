@@ -135,6 +135,52 @@ async def stream_chat(
         raise HermesUnavailable(str(e)) from e
 
 
+async def complete_chat(
+    *,
+    profile: str,
+    user_uuid: str,
+    session_id: Optional[str],
+    messages: List[Dict[str, str]],
+    model: str = "hermes-agent",
+) -> str:
+    """
+    One non-streaming completion, returning the whole answer.
+
+    Used as a fallback when the streaming endpoint yields nothing. Hermes'
+    streaming path has been observed emitting a role delta, an empty delta and
+    `finish_reason: stop` while the identical non-streaming call returns real
+    content — including error text the stream silently dropped. Rather than
+    depend on that, take the answer in one piece and hand it to the client as a
+    single chunk: worse typing animation, an answer instead of an empty bubble.
+    """
+    url = f"{S.HERMES_API_URL}{_base_path(profile)}/chat/completions"
+    timeout = httpx.Timeout(
+        connect=10.0, read=S.HERMES_REQUEST_TIMEOUT_SECONDS, write=30.0, pool=10.0
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, verify=S.VERIFY_SSL) as client:
+            response = await client.post(
+                url,
+                json={"model": model, "messages": messages, "stream": False},
+                headers=build_headers(user_uuid=user_uuid, session_id=session_id),
+            )
+    except httpx.HTTPError as e:
+        logger.error("Hermes non-streaming call failed: %s", e)
+        raise HermesUnavailable(str(e)) from e
+
+    if response.status_code >= 400:
+        logger.error("Hermes returned HTTP %s: %s", response.status_code, response.text[:500])
+        raise HermesUnavailable(f"Hermes returned HTTP {response.status_code}")
+
+    try:
+        choices = (response.json() or {}).get("choices") or []
+        return ((choices[0].get("message") or {}).get("content") or "") if choices else ""
+    except (ValueError, IndexError, AttributeError):
+        logger.error("Could not parse Hermes response: %s", response.text[:300])
+        return ""
+
+
 async def health() -> bool:
     """Liveness of the agent, for this service's own /health."""
     try:

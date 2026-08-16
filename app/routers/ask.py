@@ -25,7 +25,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.config import get_settings
 from app.services import memory_service, rate_limit, tool_server
 from app.services.auth_service import decode_token_email, resolve_user_uuid
-from app.services.hermes_client import HermesUnavailable, stream_chat
+from app.services.hermes_client import HermesUnavailable, complete_chat, stream_chat
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
 from app.services.scope import system_prompt
 
@@ -189,6 +189,22 @@ async def stream_message(
                 # platform grounding that did not happen.
                 yield await emit("sources", [])
                 yield await emit("grounding", {"mode": "general_fallback"})
+
+            if not answer.strip():
+                # The stream said nothing. Ask again without streaming before
+                # giving up: Hermes drops content on the streaming path in some
+                # states, and an answer delivered in one chunk beats none.
+                logger.warning(
+                    "Empty stream for profile=%s — retrying without streaming", profile
+                )
+                answer = await complete_chat(
+                    profile=profile,
+                    user_uuid=user_uuid,
+                    session_id=session_id,
+                    messages=messages,
+                )
+                if answer.strip():
+                    yield await emit("token", {"text": answer})
 
             if not answer.strip():
                 # An agent that completes with no text is a failure wearing a

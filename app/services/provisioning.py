@@ -84,6 +84,13 @@ def _render_profile_env() -> str:
         # Hermes provider id, it is an OpenAI-compatible endpoint reached this
         # way. Same seam a self-hosted vLLM would use.
         lines.append(f"OPENAI_BASE_URL={S.MISTRAL_API_URL}/v1")
+        # The `custom` provider resolves its credential as
+        # model.api_key -> CUSTOM_API_KEY -> OPENAI_API_KEY -> OPENROUTER_API_KEY
+        # (hermes_cli/models.py). Write the first two: CUSTOM_API_KEY is the
+        # name that belongs to this provider, OPENAI_API_KEY is what the older
+        # code paths look for. Cheap insurance against a resolver that consults
+        # only one of them.
+        lines.append(f"CUSTOM_API_KEY={S.MISTRAL_API_KEY}")
         lines.append(f"OPENAI_API_KEY={S.MISTRAL_API_KEY}")
     else:
         logger.warning(
