@@ -114,6 +114,14 @@ async def stream_message(
     started = time.monotonic()
 
     async def emit(event: str, data) -> Dict[str, str]:
+        """
+        Frame one SSE event.
+
+        Strings are sent verbatim; everything else is JSON. That distinction is
+        the contract, not a convenience: the shell appends `token` payloads to
+        the answer WITHOUT parsing them, so a JSON-wrapped token renders as
+        literal `{"text": "Bon"}` in the chat. Only `token` is a bare string.
+        """
         if not isinstance(data, str):
             data = json.dumps(data, ensure_ascii=False)
         return {"event": event, "data": data}
@@ -128,7 +136,7 @@ async def stream_message(
         answer_parts: List[str] = []
 
         try:
-            yield await emit("status", {"stage": "thinking"})
+            yield await emit("status", {"stage": "agent", "message": "Working on your question..."})
 
             memory_block = ""
             if not pause_personalization:
@@ -165,7 +173,7 @@ async def stream_message(
                         )
 
                 answer_parts.append(delta)
-                yield await emit("token", {"text": delta})
+                yield await emit("token", delta)
 
             answer = "".join(answer_parts)
 
@@ -204,7 +212,7 @@ async def stream_message(
                     messages=messages,
                 )
                 if answer.strip():
-                    yield await emit("token", {"text": answer})
+                    yield await emit("token", answer)
 
             if not answer.strip():
                 # An agent that completes with no text is a failure wearing a
@@ -221,7 +229,7 @@ async def stream_message(
                 )
                 return
 
-            yield await emit("final", {"answer": answer})
+            yield await emit("final", {"text": answer})
             yield await emit("timing", {"total_ms": int((time.monotonic() - started) * 1000)})
             yield await emit("done", {"ok": True})
 
