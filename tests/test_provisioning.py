@@ -176,3 +176,28 @@ def test_missing_profile_env_is_repaired(configured, volume):
     (volume / "profiles" / UUID_A / ".env").unlink()
     assert provisioning.ensure_profile(UUID_A) is False
     assert (volume / "profiles" / UUID_A / ".env").is_file()
+
+
+def test_template_change_reaches_existing_profiles(configured, volume):
+    provisioning.ensure_profile(UUID_A)
+    rendered = volume / "profiles" / UUID_A / "config.yaml"
+    assert "provider: broken" not in rendered.read_text()
+
+    # Edit the shared template the way an operator would — e.g. correcting the
+    # provider. Comparing only the keys would leave the profile on the old
+    # config forever, which is exactly how "Unknown provider" survived a fix.
+    template = volume / "config.yaml"
+    template.write_text("model:\n  provider: fixed\n" + template.read_text(), encoding="utf-8")
+
+    assert provisioning.ensure_profile(UUID_A) is False
+    assert "provider: fixed" in rendered.read_text()
+
+
+def test_soul_change_reaches_existing_profiles(configured, volume):
+    provisioning.ensure_profile(UUID_A)
+    (volume / "SOUL.md").write_text("# updated scope contract\n", encoding="utf-8")
+
+    provisioning.ensure_profile(UUID_A)
+
+    # A profile holding an older SOUL.md is a profile running older rules.
+    assert (volume / "profiles" / UUID_A / "SOUL.md").read_text() == "# updated scope contract\n"

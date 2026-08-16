@@ -105,11 +105,16 @@ def _config_is_current(profile: str) -> bool:
     """
     Does this profile's config still match what we would write today?
 
-    The bridge key is the part that rots: EUF_BRIDGE_KEY is baked into each
-    profile at provisioning time, so rotating HERMES_API_KEY (or correcting a
-    mismatch with API_SERVER_KEY) silently invalidates every existing profile —
-    the agent keeps answering, but every tool call 401s against the adapter, and
-    the only symptom is an assistant that has mysteriously stopped searching.
+    Compares the WHOLE rendered template, not just the credentials. A profile's
+    config.yaml is a derived artifact — every edit to hermes-data/config.yaml
+    (the provider, the toolsets, the memory switches, the MCP block) has to
+    reach existing profiles or they keep running yesterday's configuration
+    while the template says otherwise. That is not hypothetical: fixing
+    `provider: mistral` -> `custom` in the template changed nothing for the one
+    profile that already existed, because only the keys were being compared.
+
+    Same for SOUL.md: it carries the scope contract, and a profile silently
+    holding an older copy is a profile with older rules.
     """
     directory = profile_dir(profile)
     try:
@@ -117,13 +122,19 @@ def _config_is_current(profile: str) -> bool:
         env = (directory / ".env").read_text(encoding="utf-8")
     except OSError:
         return False
-    fresh = (
-        f'EUF_BRIDGE_KEY: "{S.HERMES_API_KEY}"' in current
-        and f"API_SERVER_KEY={S.HERMES_API_KEY}" in env
-    )
-    if fresh and S.MISTRAL_API_KEY:
-        fresh = f"OPENAI_API_KEY={S.MISTRAL_API_KEY}" in env
-    return fresh
+
+    if current != _render_config(profile) or env != _render_profile_env():
+        return False
+
+    soul = _data_dir() / "SOUL.md"
+    if soul.is_file():
+        try:
+            if (directory / "SOUL.md").read_text(encoding="utf-8") != soul.read_text(encoding="utf-8"):
+                return False
+        except OSError:
+            return False
+
+    return True
 
 
 def _render_config(profile: str) -> str:
@@ -170,7 +181,12 @@ def ensure_profile(profile: str) -> bool:
             try:
                 (target / "config.yaml").write_text(_render_config(profile), encoding="utf-8")
                 _write_profile_env(target)
-                logger.warning("Refreshed stale config/.env for profile %s (keys changed)", profile)
+                soul = _data_dir() / "SOUL.md"
+                if soul.is_file():
+                    shutil.copyfile(soul, target / "SOUL.md")
+                logger.warning(
+                    "Refreshed profile %s from the current template (config/.env/SOUL)", profile
+                )
             except OSError as e:
                 raise ProvisioningError(f"could not refresh config for {profile}: {e}") from e
         return False
