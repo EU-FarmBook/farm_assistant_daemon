@@ -1,0 +1,10 @@
+# Direct dependencies only; pip resolves the transitive set.
+# Versions match farm_assistant_um so the copied modules (auth_service,
+# search_service, context_service, security) behave identically here.
+fastapi==0.141.1
+httpx==0.28.1
+pydantic==2.13.4
+pydantic-settings==2.15.0
+python-dotenv==1.2.2
+sse-starlette==3.4.8
+uvicorn==0.52.1

@@ -1,0 +1,15 @@
+# Allowlist, same shape as farm_assistant_um: the adapter image needs the app
+# code and the dependency manifest, nothing else.
+#
+# This matters more here than in a normal service. hermes-data/ holds the agent
+# volume — .env with the Mistral key and the API server key, and after a first
+# run the agent's own credential files — and .venv/ is tens of megabytes. Both
+# would otherwise be uploaded to the Docker daemon (and to any remote builder)
+# on every build, even though the Dockerfile never COPYs them.
+*
+!app/
+!requirements.txt
+
+# No compiled cruft from the allowed directories either.
+**/__pycache__/
+**/*.py[cod]

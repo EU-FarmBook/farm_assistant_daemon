@@ -1,0 +1,5 @@
+# Test tooling. Kept out of requirements.txt so it does not ship in the
+# production image — the Dockerfile installs the runtime manifest only.
+-r requirements.txt
+pytest==8.4.2
+pytest-asyncio==1.2.0

@@ -1,0 +1,121 @@
+services:
+  # The agent. Its API is the whole capability surface behind one bearer key, so
+  # it is published on loopback only and reached from the adapter over the
+  # internal network. Never map it to 0.0.0.0.
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: euf-hermes
+    restart: unless-stopped
+    command: gateway run
+
+    volumes:
+      # The only host path the agent can see. Note what is NOT here: no user
+      # memory files (memory is in MySQL — see hermes-data/config.yaml), no
+      # project directories, no host filesystem.
+      - ./hermes-data:/opt/data
+      # Follow the host clock so the agent's sense of "today" matches the
+      # platform's. Read-only.
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+
+    expose:
+      # Reachable from the adapter over the compose network ONLY. Deliberately
+      # not published: on the nexavion host this port must never be routable
+      # from outside, because it is the agent's whole capability surface behind
+      # a single bearer key. Debug from the host with
+      # `docker compose exec hermes curl -s localhost:8642/health`.
+      - "8642"
+
+    environment:
+      - PUID=1000
+      - PGID=1000
+      # Without this the API server binds 127.0.0.1 INSIDE the container and the
+      # adapter cannot reach it over the compose network.
+      - API_SERVER_HOST=0.0.0.0
+      - HERMES_DASHBOARD=0
+      # Per-turn agent loop budget. Hermes defaults to 500 (gateway/run.py
+      # _current_max_iterations), which on a per-token-billed API, with the
+      # memory block in every call, is a cost and latency hazard rather than a
+      # feature. A grounded answer needs one or two searches; 6 leaves room to
+      # re-query twice and still stop.
+      - HERMES_MAX_ITERATIONS=6
+
+    env_file:
+      - path: ./hermes-data/.env
+        required: false
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks: [euf-hermes]
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8642/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # The adapter: platform contract outward, Hermes inward. This is the only
+  # component that holds credentials — OpenSearch, and the caller's JWT for the
+  # duration of a turn.
+  adapter:
+    build:
+      context: .
+    image: ghcr.io/eu-farmbook/farm_assistant_hermes:latest
+    container_name: euf-hermes-adapter
+    restart: unless-stopped
+    depends_on:
+      - hermes
+
+    # Must match the agent's PUID/PGID. Both containers write to ./hermes-data:
+    # the adapter creates a user's profile directory, then the agent writes that
+    # profile's sessions, logs and state INSIDE it. If the adapter ran as root
+    # (the image default), every provisioned profile would be root-owned and the
+    # agent — running as 1000 — could not write into it. The first pilot turn
+    # would provision successfully and then fail on every turn after.
+    user: "1000:1000"
+
+    volumes:
+      # The adapter provisions a pilot user's profile on their first turn by
+      # writing <data>/profiles/<uuid>/, which Hermes picks up on the next
+      # request (its profile routing is a live directory scan). That is why this
+      # needs no docker socket and no shell into the agent container.
+      - ./hermes-data:/opt/data
+
+    # No published ports, same convention as farm_assistant_um: on nexavion the
+    # reverse proxy terminates TLS for hermes.farm-assistant.nexavion.com and
+    # forwards to this container on 8100. For a local stack, uncomment:
+    # ports:
+    #   - "127.0.0.1:8100:8100"
+    expose:
+      - "8100"
+
+    env_file:
+      - path: ./.env
+        required: false
+
+    environment:
+      - HERMES_API_URL=http://hermes:8642
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks: [euf-hermes]
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  euf-hermes:
+    driver: bridge

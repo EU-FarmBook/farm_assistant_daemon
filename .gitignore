@@ -1,0 +1,53 @@
+# ---- Secrets ----
+.env
+*.local.md
+.frontend-key.local
+
+# ---- hermes-data/ is a live volume, not source ----
+# Hermes writes dozens of directories into this path at runtime: SQLite
+# databases (state.db, response_store.db, kanban.db), a ~4 MB models cache,
+# session transcripts, sandboxes, lazy-installed packages — and several
+# credential files (auth.json, mcp-tokens/, gateway.pid). Committing any of
+# that would leak secrets and bloat the repo, so this is an allowlist: track
+# only the three things we author, ignore everything the agent generates.
+#
+# Note there are deliberately no memory files to track here, unlike mneme:
+# user memory lives in MySQL under django_euf_admin, never on this volume.
+hermes-data/*
+!hermes-data/config.yaml
+!hermes-data/SOUL.md
+!hermes-data/scripts/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# ---- Tests / tooling ----
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ---- Editors / IDE ----
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# ---- Logs and OS cruft ----
+*.log
+logs/
+.DS_Store
+Thumbs.db
+
+# NOTE: unlike farm_assistant_um, `tests/` and `scripts/` ARE tracked here.
+# seed_profiles.sh is required to provision a pilot user at all, and the tests
+# encode the two isolation guarantees (profile allowlist, derived memory scope)
+# that make this service safe to point at real accounts. Both belong in the repo.

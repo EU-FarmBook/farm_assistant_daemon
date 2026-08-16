@@ -1,0 +1,83 @@
+# Hermes configuration for the EU-FarmBook v3 pilot.
+#
+# Two settings here carry the whole safety argument of this deployment. Read the
+# comments before changing either.
+
+# ── Inference ─────────────────────────────────────────────────────────
+# Mistral AI. Chosen because it is a native Hermes provider, its models are
+# reliable tool-callers, and mistral-large-latest carries 262k context — well
+# clear of Hermes' 64k floor, which the platform's own vLLM (16k in the
+# concurrency-tuned config) is not.
+#
+# The A40 is the intended end state, exactly as in mneme: this is inference on a
+# third party, and every turn ships the user's remembered profile to it. That is
+# why the pilot is internal-only. Moving back in-house means `provider: custom`
+# + OPENAI_BASE_URL at a vLLM serving with
+# `--enable-auto-tool-choice --tool-call-parser hermes` and `--max-model-len 65536`.
+model:
+  provider: mistral
+  default: mistral-large-latest
+
+fallback_providers:
+  - provider: mistral
+    model: mistral-medium-latest
+
+# ── Memory: OFF, deliberately ─────────────────────────────────────────
+# Hermes' built-in memory writes MEMORY.md and USER.md into the profile home on
+# the container volume. Personal data on an EU platform belongs in the database
+# with the rest of the account — subject to the same access control, export and
+# deletion — so the built-in store is disabled and the adapter injects memory
+# from MySQL (via django_euf_admin) on every turn, writing back through the
+# `remember_about_user` tool.
+#
+# Turning these on would silently create a SECOND, ungoverned copy of user
+# profiles on disk. Don't.
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+
+# ── Per-user isolation ────────────────────────────────────────────────
+# Each pilot user gets their own profile, addressed as /p/<profile>/v1/...
+# Even with built-in memory off, this keeps transcripts, sessions and agent
+# state from mingling between accounts.
+gateway:
+  multiplex_profiles: true
+
+# ── Capability: one door, and it is the adapter ───────────────────────
+# No web, no terminal, no code execution, no sandboxes, no cron, no kanban, no
+# file access. The agent's entire reach is the two MCP tools below, neither of
+# which hands it a credential. This is what makes a public-facing agent
+# defensible; every toolset added here has to be justified against that.
+platform_toolsets:
+  api_server: []
+  cli: []
+
+code_execution:
+  enabled: false
+
+streaming:
+  enabled: true
+
+mcp_servers:
+  eu-farmbook:
+    command: python
+    args:
+      - /opt/data/scripts/mcp_eufarmbook.py
+    env:
+      EUF_ADAPTER_URL: http://adapter:8100
+      # Placeholders. scripts/seed_profiles.sh substitutes them when it writes
+      # each profile's copy of this file. EUF_PROFILE must differ per profile,
+      # or the adapter cannot tell whose turn a tool call belongs to — this file
+      # as it stands is a template, not a runnable config.
+      EUF_BRIDGE_KEY: "__EUF_BRIDGE_KEY__"
+      EUF_PROFILE: "__EUF_PROFILE__"
+    connect_timeout: 30.0
+    enabled: true
+
+# ── Session handling ──────────────────────────────────────────────────
+# The platform owns conversation lifecycle: a new chat sends a new
+# X-Hermes-Session-Id. Nothing here should expire transcripts behind its back.
+session_reset:
+  mode: none
+
+max_tokens: 4096
