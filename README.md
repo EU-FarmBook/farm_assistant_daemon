@@ -47,6 +47,22 @@ validation only)", on *every request*. Writing the directory is enough, which is
 why this needs no docker socket and no shell into the agent container — only the
 shared data volume.
 
+**A provisioned profile needs three files, not two.** `config.yaml`, `SOUL.md`,
+and its own `.env`. Under multiplexing Hermes resolves a named profile's
+credentials inside that profile's secret scope and refuses to borrow the
+listener's — `_expected_api_key()`: *"Named profiles must fail closed rather than
+inherit the listener owner's key."* Without `<profile>/.env` carrying
+`API_SERVER_KEY` (and the provider key, scoped the same way), every request
+returns:
+
+```
+API server rejected request for profile '<id>': no profile-scoped
+API_SERVER_KEY is configured
+```
+
+The adapter writes and repairs all three, so rotating `HERMES_API_KEY` fixes
+itself on the next turn.
+
 Authorization stays manual on purpose: provisioning is automatic, *eligibility*
 is not. A uuid off the roster is refused and nothing is created for it. If
 provisioning fails, the request is refused rather than falling back to a shared

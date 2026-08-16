@@ -57,6 +57,46 @@ def is_provisioned(profile: str) -> bool:
     return (profile_dir(profile) / "config.yaml").is_file()
 
 
+def _render_profile_env() -> str:
+    """
+    Secrets for one profile, written to `<profile>/.env`.
+
+    Required, not optional. Under multiplexing Hermes resolves a named profile's
+    credentials **inside that profile's own secret scope** and deliberately
+    refuses to borrow the listener's — `_expected_api_key()` in
+    `gateway/platforms/api_server.py`: "Named profiles must fail closed rather
+    than inherit the listener owner's key." A profile without this file answers
+    every request with:
+
+        API server rejected request for profile '<id>':
+        no profile-scoped API_SERVER_KEY is configured
+
+    The provider key is scoped the same way, so it has to be here too or the
+    agent authenticates and then cannot reach the model.
+    """
+    lines = [
+        "# Written by farm_assistant_hermes on provisioning. Do not edit by hand:",
+        "# it is regenerated whenever the adapter's keys change.",
+        f"API_SERVER_KEY={S.HERMES_API_KEY}",
+    ]
+    if S.MISTRAL_API_KEY:
+        lines.append(f"MISTRAL_API_KEY={S.MISTRAL_API_KEY}")
+    else:
+        logger.warning(
+            "MISTRAL_API_KEY is unset — provisioned profiles will have no provider "
+            "credential and the agent will fail on its first completion."
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _write_profile_env(directory: Path) -> None:
+    env_path = directory / ".env"
+    env_path.write_text(_render_profile_env(), encoding="utf-8")
+    # Same-uid-only: the agent runs as the adapter's uid, and nothing else on
+    # the volume needs to read a profile's credentials.
+    env_path.chmod(0o600)
+
+
 def _config_is_current(profile: str) -> bool:
     """
     Does this profile's config still match what we would write today?
@@ -67,11 +107,16 @@ def _config_is_current(profile: str) -> bool:
     the agent keeps answering, but every tool call 401s against the adapter, and
     the only symptom is an assistant that has mysteriously stopped searching.
     """
+    directory = profile_dir(profile)
     try:
-        current = (profile_dir(profile) / "config.yaml").read_text(encoding="utf-8")
+        current = (directory / "config.yaml").read_text(encoding="utf-8")
+        env = (directory / ".env").read_text(encoding="utf-8")
     except OSError:
         return False
-    return f'EUF_BRIDGE_KEY: "{S.HERMES_API_KEY}"' in current
+    return (
+        f'EUF_BRIDGE_KEY: "{S.HERMES_API_KEY}"' in current
+        and f"API_SERVER_KEY={S.HERMES_API_KEY}" in env
+    )
 
 
 def _render_config(profile: str) -> str:
@@ -117,7 +162,8 @@ def ensure_profile(profile: str) -> bool:
             # sessions and agent state are fine, only the rendered config is stale.
             try:
                 (target / "config.yaml").write_text(_render_config(profile), encoding="utf-8")
-                logger.warning("Refreshed stale config for profile %s (bridge key changed)", profile)
+                _write_profile_env(target)
+                logger.warning("Refreshed stale config/.env for profile %s (keys changed)", profile)
             except OSError as e:
                 raise ProvisioningError(f"could not refresh config for {profile}: {e}") from e
         return False
@@ -150,6 +196,7 @@ def ensure_profile(profile: str) -> bool:
             (staging / name).mkdir(parents=True, exist_ok=True)
 
         (staging / "config.yaml").write_text(config_text, encoding="utf-8")
+        _write_profile_env(staging)
         if soul_path.is_file():
             shutil.copyfile(soul_path, staging / "SOUL.md")
         else:

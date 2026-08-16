@@ -147,3 +147,28 @@ def test_stale_bridge_key_is_repaired_in_place(configured, volume, monkeypatch):
     # against the adapter with no visible cause.
     assert 'EUF_BRIDGE_KEY: "corrected-key"' in config.read_text()
     assert (volume / "profiles" / UUID_A / "sessions" / "keep.json").is_file()
+
+
+def test_profile_gets_its_own_env_with_the_scoped_keys(configured, volume, monkeypatch):
+    monkeypatch.setattr(provisioning, "S", Settings(
+        HERMES_PILOT_UUIDS=UUID_A, HERMES_DATA_DIR=str(volume),
+        HERMES_API_KEY="bridge-key", MISTRAL_API_KEY="mistral-key", _env_file=None))
+    provisioning.ensure_profile(UUID_A)
+
+    env = volume / "profiles" / UUID_A / ".env"
+    # Hermes resolves a NAMED profile's credentials in that profile's own secret
+    # scope and refuses to inherit the listener's key — without this file every
+    # request 401s with "no profile-scoped API_SERVER_KEY is configured".
+    assert env.is_file()
+    text = env.read_text()
+    assert "API_SERVER_KEY=bridge-key" in text
+    assert "MISTRAL_API_KEY=mistral-key" in text
+    assert env.stat().st_mode & 0o777 == 0o600
+
+
+def test_missing_profile_env_is_repaired(configured, volume):
+    provisioning.ensure_profile(UUID_A)
+    # Simulate a profile provisioned by an older build, before .env was written.
+    (volume / "profiles" / UUID_A / ".env").unlink()
+    assert provisioning.ensure_profile(UUID_A) is False
+    assert (volume / "profiles" / UUID_A / ".env").is_file()
