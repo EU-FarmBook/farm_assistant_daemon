@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import get_settings
-from app.services import memory_service, rate_limit, tool_server
+from app.services import attachment_service, memory_service, rate_limit, tool_server
 from app.services.auth_service import decode_token_email, resolve_user_uuid
 from app.services.hermes_client import HermesUnavailable, complete_chat, stream_chat
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
@@ -77,6 +77,7 @@ async def stream_message(
     pause_personalization: bool = Query(False),
     replace_history: bool = Query(False),
     client_history: Optional[str] = Query(None),
+    doc_ids: Optional[str] = Query(None),
 ):
     auth_token = request.headers.get("Authorization", "")
     user_uuid = await resolve_user_uuid(auth_token) if auth_token else None
@@ -148,7 +149,19 @@ async def stream_message(
             ]
             if replace_history:
                 messages.extend(_parse_client_history(client_history))
-            messages.append({"role": "user", "content": q})
+            # Attached documents ride with the question as user-provided
+            # material, explicitly not as platform sources — the agent cites
+            # EU-FarmBook by number, and an uploaded file must never be
+            # presented as though it came from the platform.
+            question = q
+            if doc_ids:
+                attached = attachment_service.build_context(
+                    [d for d in doc_ids.split(",") if d.strip()], user_uuid
+                )
+                if attached:
+                    question = f"{attached}\n\n{q}"
+
+            messages.append({"role": "user", "content": question})
 
             async for delta in stream_chat(
                 profile=profile,

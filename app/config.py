@@ -135,6 +135,13 @@ class Settings(BaseSettings):
     # next request (its profile routing is a live directory scan).
     HERMES_DATA_DIR: str = "/opt/data"
 
+    # --- Attachments (documents only) -----------------------------------------
+    # Extracted at upload and held in-process, so these bound memory as much as
+    # they bound the upload. Images are not supported in v3 — that needs the
+    # vision model wired, which is separate work.
+    ATTACHMENT_MAX_BYTES: int = 15 * 1024 * 1024
+    ATTACHMENT_MAX_CHARS: int = 120_000
+
     # --- Memory summary ------------------------------------------------------
     # The settings dialog's "Memory summary / Update" button. This is the ONE
     # place the adapter calls a model directly instead of going through the

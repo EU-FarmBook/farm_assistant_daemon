@@ -50,3 +50,20 @@ def test_internal_tool_surface_is_not_published():
     # memory write out of band.
     paths = app.openapi()["paths"]
     assert not [p for p in paths if p.startswith("/internal/")]
+
+
+def test_the_endpoints_added_for_suggestions_and_attachments_exist():
+    """
+    These three were each added because the copied v2 shell already called them
+    and got nothing: follow-up chips rendered as empty grey pills, the `+`
+    button failed, and the empty chat had no openers.
+    """
+    paths = app.openapi()["paths"]
+    for method, path in [
+        ("post", "/chatbot/api/follow-ups"),
+        ("get", "/chatbot/api/users/me/suggestions"),
+        ("post", "/chatbot/api/files/document"),
+        ("delete", "/chatbot/api/files/document/{doc_id}"),
+        ("get", "/chatbot/api/chats/{session_id}/attachments"),
+    ]:
+        assert path in paths and method in paths[path], f"missing {method.upper()} {path}"

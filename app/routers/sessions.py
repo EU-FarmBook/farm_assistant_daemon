@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import get_settings
 from app.schemas import ChatSessionCreateIn, ChatSessionPatchIn, ChatTurnLogIn, MessageFeedbackIn
+from app.services import attachment_service
 from app.services.auth_service import resolve_user_uuid
 
 S = get_settings()
@@ -107,14 +108,24 @@ async def message_feedback(session_id: str, message_id: int, body: MessageFeedba
 @router.get("/{session_id}/attachments")
 async def list_attachments(session_id: str, request: Request):
     """
-    Always empty: v3 has no attachment support.
+    Documents attached to this session, for the chips above the composer.
 
-    Answered rather than 404'd on purpose. The shell fetches this when opening a
-    session, and an error there breaks loading the conversation — a feature the
-    engine lacks should degrade to "nothing to show", not to a broken chat.
+    Answered rather than 404'd even when empty: the shell fetches this when
+    opening a session, and an error here breaks loading the conversation.
     """
-    await _require_token(request)
-    return {"status": "ok", "attachments": []}
+    auth_token = await _require_token(request)
+    user_uuid = await resolve_user_uuid(auth_token)
+    return {
+        "status": "ok",
+        "attachments": [
+            {
+                "doc_id": a.doc_id,
+                "filename": a.filename,
+                "mime_type": a.mime_type,
+            }
+            for a in attachment_service.for_session(session_id, user_uuid or "")
+        ],
+    }
 
 
 @router.post("/log-turn")

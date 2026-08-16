@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.routers.ask import router as ask_router
+from app.routers.files import router as files_router
+from app.routers.follow_ups import router as follow_ups_router
 from app.routers.memory import router as memory_router
 from app.routers.sessions import router as sessions_router
 from app.routers.tools import router as tools_router
@@ -97,4 +99,6 @@ async def health():
 app.include_router(ask_router)
 app.include_router(sessions_router)
 app.include_router(memory_router)
+app.include_router(files_router)
+app.include_router(follow_ups_router)
 app.include_router(tools_router)

@@ -70,6 +70,12 @@ LANGUAGE_RULE = (
     "passages or any quoted material. Switch languages only if the user explicitly asks."
 )
 
+FOLLOWUP_RULE = (
+    "If a follow-up question would genuinely help the user, end with one. Skip it "
+    "for greetings, thanks, confirmations, closings, and refusals — an offer to "
+    "continue is noise when there is nothing to continue."
+)
+
 BREVITY_RULE = (
     "Default to a concise answer — typically 3-6 sentences, or a short list when listing is natural. "
     "Expand only when the user asks for depth, a comparison, or a long-form breakdown."
@@ -85,7 +91,10 @@ def system_prompt(memory_block: Optional[str] = None) -> str:
     reads is the constraint rather than any attempt to escape it. If you refactor
     this, keep the memory block in the middle — not at the end.
     """
-    blocks = [IDENTITY, SCOPE_RULE, SOURCE_DEPENDENCE_RULE, MEMORY_TOOL_RULE, LANGUAGE_RULE, BREVITY_RULE]
+    blocks = [
+        IDENTITY, SCOPE_RULE, SOURCE_DEPENDENCE_RULE, MEMORY_TOOL_RULE,
+        LANGUAGE_RULE, BREVITY_RULE, FOLLOWUP_RULE,
+    ]
 
     if memory_block:
         blocks.append(memory_block)

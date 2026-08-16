@@ -23,7 +23,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 
 from app.schemas import MemoryDocumentPatchIn, MemoryDocumentsOut
-from app.services import memory_service
+from app.services import memory_service, suggestion_service
 from app.services.auth_service import decode_token_email, resolve_user_uuid
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
 
@@ -80,8 +80,11 @@ async def list_memory(request: Request, limit: int = 50):
 
 @router.delete("/memory/{note_id}")
 async def delete_memory(note_id: int, request: Request):
-    auth_token, _, _ = await _caller(request)
+    auth_token, user_uuid, _ = await _caller(request)
     ok = await memory_service.delete_note(auth_token, note_id)
+    if ok:
+        # Their memory just changed; the cached openers are now stale.
+        suggestion_service.invalidate(user_uuid)
     if not ok:
         raise HTTPException(status_code=502, detail="Could not delete that memory right now.")
     return {"status": "ok"}
@@ -107,6 +110,20 @@ async def regenerate_summary(request: Request):
     return {"memory_summary": summary, "regenerated": True}
 
 
+@router.get("/suggestions")
+async def get_suggestions(request: Request):
+    """
+    Opening prompts for an empty chat, generated from this user's memory.
+
+    Cached for an hour per user, and falls back to a fixed EU-FarmBook set when
+    there is nothing remembered yet — a first-time visitor should still be
+    offered something sensible.
+    """
+    auth_token, user_uuid, _ = await _caller(request)
+    suggestions, personalised = await suggestion_service.get_suggestions(auth_token, user_uuid)
+    return {"status": "ok", "personalised": personalised, "suggestions": suggestions}
+
+
 # --- The two-document view (v3 only) --------------------------------------
 
 @router.get("/memory/documents", response_model=MemoryDocumentsOut)
@@ -125,8 +142,10 @@ async def patch_user_document(body: MemoryDocumentPatchIn, request: Request):
     corrects it by deleting individual notes, so an accidental full-buffer
     overwrite cannot wipe the agent's memory in one keystroke.
     """
-    auth_token, _, _ = await _caller(request)
+    auth_token, user_uuid, _ = await _caller(request)
     ok = await memory_service.save_about_you(auth_token, about_you=body.content)
+    if ok:
+        suggestion_service.invalidate(user_uuid)
     if not ok:
         raise HTTPException(status_code=502, detail="Could not save your profile right now.")
     return {"status": "ok"}
