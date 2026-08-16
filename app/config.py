@@ -82,10 +82,35 @@ class Settings(BaseSettings):
     HERMES_MULTIPLEX_PROFILES: bool = True
     HERMES_REQUEST_TIMEOUT_SECONDS: float = 180.0
 
-    # --- Pilot roster and profiles -------------------------------------------
-    # THREE ways to admit a user, checked in this order. Configure at least one
-    # or nobody gets in — the gate fails closed, never open. The profile itself
-    # is always created automatically on first use.
+    # --- Access ---------------------------------------------------------------
+    # OPEN ACCESS: any authenticated EU-FarmBook user may chat, and their agent
+    # is created on their first message. No roster, no operator step.
+    #
+    # What this turns off is a *bound*, not a login check: identity is still
+    # verified against Django on every request. What becomes unbounded is spend
+    # (every turn is billed to MISTRAL_API_KEY), disk (one profile directory per
+    # user who ever visits), and how many people's remembered profiles are sent
+    # to a third party. RATE_LIMIT_* below is what keeps the first of those
+    # survivable — do not run open access with the limiter disabled.
+    HERMES_OPEN_ACCESS: bool = False
+
+    # --- Per-user rate limit --------------------------------------------------
+    # Counted per verified uuid, in-process (this service is single-replica by
+    # design — see tool_server). An agent turn is several model calls, so these
+    # are deliberately lower than a chat-completion service would use.
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_TURNS_PER_MIN: int = 6
+    RATE_LIMIT_TURNS_PER_DAY: int = 120
+
+    # Hard ceiling on how many agents can ever exist, as a disk and blast-radius
+    # bound under open access. 0 = unlimited. When reached, existing users keep
+    # working and new ones are refused with a clear log line.
+    MAX_PROFILES: int = 0
+
+    # --- Roster (optional; ignored when HERMES_OPEN_ACCESS is true) ------------
+    # THREE ways to admit a user when access is NOT open. Configure at least one
+    # or nobody gets in — the gate fails closed. The profile itself is always
+    # created automatically on first use.
     #
     # 1. Email domains, comma-separated (`ugent.be,nexavion.com`). Least
     #    maintenance: nobody's uuid has to be looked up. Only applied when the

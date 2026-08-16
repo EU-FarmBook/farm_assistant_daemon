@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import get_settings
-from app.services import memory_service, tool_server
+from app.services import memory_service, rate_limit, tool_server
 from app.services.auth_service import decode_token_email, resolve_user_uuid
 from app.services.hermes_client import HermesUnavailable, stream_chat
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
@@ -95,6 +95,20 @@ async def stream_message(
         raise HTTPException(
             status_code=403,
             detail="This experimental assistant is limited to the pilot group.",
+        )
+
+    # Before any model call: an agent turn is several billed calls, so a
+    # refusal has to happen here rather than after the spend.
+    try:
+        rate_limit.check_and_record(user_uuid)
+    except rate_limit.RateLimited as limited:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "You have reached the limit for now. Please try again in a "
+                f"{'few moments' if limited.scope == 'minute' else 'while'}."
+            ),
+            headers={"Retry-After": str(limited.retry_after_seconds)},
         )
 
     started = time.monotonic()

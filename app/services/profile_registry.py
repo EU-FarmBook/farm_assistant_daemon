@@ -4,12 +4,18 @@ uuid -> Hermes profile, and the pilot allowlist.
 
 Two separate questions, deliberately answered by different mechanisms:
 
-**Is this user allowed?** Three ways to say yes, checked in order — an email
-domain (`HERMES_PILOT_EMAIL_DOMAINS`), a roster file that is re-read without a
-restart (`HERMES_PILOT_ROSTER_FILE`), or the static `HERMES_PILOT_UUIDS`. If none
-of them is configured, nobody is allowed: this fails closed, never open. There is
-also no "default profile" fallback and there must never be one, since Hermes'
-agent state is per profile home.
+**Is this user allowed?** With `HERMES_OPEN_ACCESS`, any authenticated user is —
+they arrive, they chat, their agent is created on the first message, and no
+operator touches anything. Otherwise a roster decides: an email domain
+(`HERMES_PILOT_EMAIL_DOMAINS`), a hot-reloaded file (`HERMES_PILOT_ROSTER_FILE`),
+or the static `HERMES_PILOT_UUIDS`; with none configured nobody is allowed, so
+the roster path fails closed rather than open.
+
+Open or not, identity is still VERIFIED — `user_uuid` comes from a token
+introspected against Django. Open access removes a bound on *who*, never the
+check on *whether they are who they say*. There is also no "default profile"
+fallback and there must never be one, since Hermes' agent state is per profile
+home.
 
 **Does their agent exist yet?** Not a question the operator should have to
 answer. The profile is created on first use by `provisioning.ensure_profile()`,
@@ -125,6 +131,9 @@ def is_pilot_user(user_uuid: Optional[str], email: Optional[str] = None) -> bool
     if not user_uuid:
         return False
 
+    if get_settings().HERMES_OPEN_ACCESS:
+        return True
+
     domains = _allowed_domains()
     if domains and email:
         domain = email.rsplit("@", 1)[-1].lower()
@@ -186,6 +195,16 @@ def pilot_size() -> int:
 
 def gate_description() -> str:
     """One-line summary of how access is gated, for the startup log."""
+    settings = get_settings()
+    if settings.HERMES_OPEN_ACCESS:
+        limiter = (
+            f"limit={settings.RATE_LIMIT_TURNS_PER_MIN}/min,"
+            f"{settings.RATE_LIMIT_TURNS_PER_DAY}/day"
+            if settings.RATE_LIMIT_ENABLED else "LIMITER DISABLED"
+        )
+        cap = f"max_profiles={settings.MAX_PROFILES}" if settings.MAX_PROFILES else "profiles=unlimited"
+        return f"OPEN to all authenticated users ({limiter}, {cap})"
+
     parts = []
     if _allowed_domains():
         parts.append("domains=" + ",".join(sorted(_allowed_domains())))

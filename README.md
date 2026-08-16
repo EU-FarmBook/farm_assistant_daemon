@@ -26,11 +26,21 @@ eu-farmbook-frontend  /farm-assistant-v3
 on and every pilot user is addressed as `/p/<profile>/v1/...`, with their profile
 id defaulting to their uuid.
 
-Getting into the pilot is decided by three settings, any one of which admits a
-user: **`HERMES_PILOT_EMAIL_DOMAINS`** (anyone with a `@ugent.be` address —
-least maintenance), **`HERMES_PILOT_ROSTER_FILE`** (a uuid list re-read every
-30s, so `echo <uuid> >> roster.txt` needs no restart), or the static
-**`HERMES_PILOT_UUIDS`**. With none configured, nobody is admitted. Their profile directory is written by the adapter on their first turn
+With **`HERMES_OPEN_ACCESS=true`** there is no enrolment at all: a user arrives,
+starts chatting, and their agent is created on the first message. Identity is
+still verified against Django on every request — open access removes the roster,
+not the login, and an unauthenticated caller has no agent to be routed to.
+
+What replaces the roster as a bound is **`RATE_LIMIT_*`** (turns per user per
+minute and per day, refused before any model call) and optionally
+**`MAX_PROFILES`**. Do not run open access with the limiter off: a turn is an
+agent loop of several billed calls, so one account with a valid token can spend
+without limit, and the first sign is the invoice.
+
+For a closed pilot instead, set `HERMES_OPEN_ACCESS=false` and use any of
+`HERMES_PILOT_EMAIL_DOMAINS`, `HERMES_PILOT_ROSTER_FILE` (re-read every 30s, so
+`echo <uuid> >> roster.txt` needs no restart) or `HERMES_PILOT_UUIDS`. With none
+configured, nobody is admitted — the roster path fails closed. Their profile directory is written by the adapter on their first turn
 (`app/services/provisioning.py`), because Hermes resolves `/p/<profile>/` through
 `profiles_to_serve()`, "intentionally lightweight (a directory scan + name
 validation only)", on *every request*. Writing the directory is enough, which is
@@ -184,8 +194,8 @@ Checklist before the first pilot user:
 - `REQUIRE_API_KEY=true` and `CHAT_API_KEYS` carries the frontend's key hash
 - `CHAT_BACKEND_URL` / `AUTH_BACKEND_URL` point at the **same** Django realm the
   frontend logs into, or every token fails introspection
-- at least one of `HERMES_PILOT_EMAIL_DOMAINS` / `HERMES_PILOT_ROSTER_FILE` /
-  `HERMES_PILOT_UUIDS` is set — otherwise every request is refused
+- `HERMES_OPEN_ACCESS=true` (or, for a closed pilot, one of the roster settings)
+- `RATE_LIMIT_ENABLED=true` — the only thing bounding spend under open access
 - the `./hermes-data` volume is mounted into **both** containers — the adapter
   writes profile directories into it
 - `OPENSEARCH_*` copied from `farm_assistant_um` so v2 and v3 retrieve identically

@@ -14,11 +14,11 @@ container: it shares the data volume and writes a directory. The earlier design
 assumed provisioning required the CLI, which would have meant an operator running
 a script before any new user could chat.
 
-**What stays manual: authorization.** Provisioning is automatic; being *allowed*
-is not. `HERMES_PILOT_UUIDS` is the roster, and a uuid outside it never reaches
-this module. Auto-creating for any authenticated account would hand every
-EU-FarmBook user their own agent, with the cost and the third-party data transfer
-that implies.
+**Under open access this runs for every new user**, which is the intent: someone
+arrives, chats, and their agent exists. The bounds that keep that survivable are
+elsewhere — `rate_limit` caps turns per user, and `MAX_PROFILES` (checked below)
+caps how many agents can ever exist. Provisioning itself stays deliberately
+dumb: it writes a directory, and refuses rather than improvising if it cannot.
 """
 
 import logging
@@ -76,6 +76,13 @@ def _render_config(profile: str) -> str:
     return rendered
 
 
+def profile_count() -> int:
+    root = _data_dir() / "profiles"
+    if not root.is_dir():
+        return 0
+    return sum(1 for entry in root.iterdir() if entry.is_dir() and not entry.name.startswith("."))
+
+
 def ensure_profile(profile: str) -> bool:
     """
     Make sure `profile` exists on the shared volume. Returns True if it was
@@ -89,6 +96,16 @@ def ensure_profile(profile: str) -> bool:
     target = profile_dir(profile)
     if is_provisioned(profile):
         return False
+
+    # Disk and blast-radius ceiling under open access. Existing users are
+    # unaffected — only the creation of a NEW agent is refused — so hitting this
+    # degrades enrolment rather than breaking the service.
+    max_profiles = S.MAX_PROFILES
+    if max_profiles and profile_count() >= max_profiles:
+        logger.error(
+            "Refusing to provision %s: MAX_PROFILES=%s reached", profile, max_profiles
+        )
+        raise ProvisioningError(f"profile limit reached ({max_profiles})")
 
     data_dir = _data_dir()
     if not (data_dir / "config.yaml").is_file():
