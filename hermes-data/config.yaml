@@ -3,6 +3,17 @@
 # Two settings here carry the whole safety argument of this deployment. Read the
 # comments before changing either.
 
+# Schema version of this file. WITHOUT it Hermes treats a hand-written config as
+# predating version 12 and refuses to migrate it:
+#
+#   [config-migrate] WARNING: This config predates version 12 (~2 years old) and
+#   can no longer be auto-migrated.
+#
+# which puts every setting below in doubt — including the empty toolsets and the
+# disabled built-in memory. Keep this in step with the value the running image
+# writes for a fresh profile (`grep _config_version` in a generated config).
+_config_version: 37
+
 # ── Inference ─────────────────────────────────────────────────────────
 # Mistral AI. Chosen because it is a native Hermes provider, its models are
 # reliable tool-callers, and mistral-large-latest carries 262k context — well

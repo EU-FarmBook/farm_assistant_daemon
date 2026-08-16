@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import get_settings
-from app.schemas import ChatTurnLogIn
+from app.schemas import ChatSessionCreateIn, ChatSessionPatchIn, ChatTurnLogIn, MessageFeedbackIn
 from app.services.auth_service import resolve_user_uuid
 
 S = get_settings()
@@ -57,6 +57,20 @@ async def list_sessions(request: Request):
     return await _django("GET", "/chat/sessions/", auth_token)
 
 
+@router.post("")
+async def create_session(body: ChatSessionCreateIn, request: Request):
+    """
+    Create an empty session.
+
+    The shell calls this BEFORE streaming the first message — the stream URL is
+    `/chats/{session_id}/message/stream`, so without a session there is nothing
+    to stream to and the composer fails silently. Missing this endpoint is why a
+    sent message appeared to do nothing at all.
+    """
+    auth_token = await _require_token(request)
+    return await _django("POST", "/chat/sessions/", auth_token, json=body.model_dump())
+
+
 @router.get("/{session_id}")
 async def get_session(session_id: str, request: Request):
     auth_token = await _require_token(request)
@@ -67,6 +81,40 @@ async def get_session(session_id: str, request: Request):
 async def delete_session(session_id: str, request: Request):
     auth_token = await _require_token(request)
     return await _django("DELETE", f"/chat/sessions/{session_id}/", auth_token)
+
+
+@router.patch("/{session_id}")
+async def rename_session(session_id: str, body: ChatSessionPatchIn, request: Request):
+    """Rename a session — the shell titles a chat after the first exchange."""
+    auth_token = await _require_token(request)
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    return await _django("PATCH", f"/chat/sessions/{session_id}/", auth_token, json=payload)
+
+
+@router.post("/{session_id}/messages/{message_id}/feedback")
+async def message_feedback(session_id: str, message_id: int, body: MessageFeedbackIn,
+                           request: Request):
+    """Thumbs up/down on an answer."""
+    auth_token = await _require_token(request)
+    return await _django(
+        "POST",
+        f"/chat/sessions/{session_id}/message/{message_id}/feedback/",
+        auth_token,
+        json=body.model_dump(),
+    )
+
+
+@router.get("/{session_id}/attachments")
+async def list_attachments(session_id: str, request: Request):
+    """
+    Always empty: v3 has no attachment support.
+
+    Answered rather than 404'd on purpose. The shell fetches this when opening a
+    session, and an error there breaks loading the conversation — a feature the
+    engine lacks should degrade to "nothing to show", not to a broken chat.
+    """
+    await _require_token(request)
+    return {"status": "ok", "attachments": []}
 
 
 @router.post("/log-turn")

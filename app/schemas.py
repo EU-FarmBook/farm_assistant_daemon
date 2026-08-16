@@ -43,6 +43,21 @@ class SourceItem(BaseModel):
     sid: str | None = None
 
 
+class ChatSessionCreateIn(BaseModel):
+    title: str = ""
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatSessionPatchIn(BaseModel):
+    title: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class MessageFeedbackIn(BaseModel):
+    feedback: str = Field(examples=["up", "down", "none"])
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatTurnLogIn(BaseModel):
     session_uuid: Optional[str] = None
     user_message: str
