@@ -313,14 +313,21 @@ async def save_summary(auth_token: str, summary: str) -> bool:
     return status == 200
 
 
-def _usable_notes(mem: UserMemory) -> List[str]:
-    """Confidence-filter BEFORE trimming, so a solid note is never lost to a shaky one."""
+def usable_notes(mem: UserMemory) -> List[Dict]:
+    """
+    The notes eligible for the prompt, as rows (so callers keep their ids).
+
+    Confidence-filter BEFORE trimming, so a solid note is never lost to a shaky one.
+    """
     confident = [
         n for n in mem.notes
         if float(n.get("confidence") or n.get("confidence_score") or 0) >= _MIN_CONFIDENCE
     ]
-    texts = [(n.get("note_text") or "").strip() for n in confident]
-    return [t for t in texts if t][:_MAX_PROMPT_NOTES]
+    return [n for n in confident if (n.get("note_text") or "").strip()][:_MAX_PROMPT_NOTES]
+
+
+def _usable_notes(mem: UserMemory) -> List[str]:
+    return [(n.get("note_text") or "").strip() for n in usable_notes(mem)]
 
 
 def render_memory_block(mem: UserMemory, first_name: Optional[str] = None) -> str:
@@ -360,8 +367,11 @@ def render_memory_block(mem: UserMemory, first_name: Optional[str] = None) -> st
         )
     if mem.about_you:
         background.append(f"What the user has told you about themselves: {mem.about_you}")
-    for note in _usable_notes(mem):
-        background.append(f"Remembered: {note}")
+    # Numbered so the agent can name one to forget: without a handle, a wrong
+    # note can only ever be corrected by ADDING a contradicting one, and the
+    # user is left with both.
+    for index, note in enumerate(_usable_notes(mem), start=1):
+        background.append(f"Remembered [M{index}]: {note}")
 
     sections: List[str] = []
     if preferences:

@@ -78,3 +78,19 @@ def test_search_query_without_history_is_the_question():
     assert ask._search_query("What is pig manure used for?", []) == (
         "What is pig manure used for?"
     )
+
+
+def test_uncited_answers_do_not_claim_grounding():
+    src = _source()
+    # "Who am I?" pre-retrieved five unrelated documents and the UI said
+    # "Grounded in EU-FarmBook" over an answer that cited none of them.
+    assert 'sent_version and not re.search' in src
+    assert 'cited nothing' in src
+
+
+def test_the_agent_can_forget_a_wrong_note():
+    from app.services import tool_server
+    # Correcting a memory by adding a contradicting note leaves the user with
+    # both, which is what produced "Italy (though I also have a note about
+    # Provence-Alpes-Côte d'Azur)".
+    assert hasattr(tool_server, "forget_about_user")

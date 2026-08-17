@@ -16,6 +16,7 @@ no rewrite.
 
 import json
 import logging
+import re
 import time
 from typing import AsyncIterator, Dict, List, Optional
 
@@ -180,6 +181,12 @@ async def stream_message(
                 memory_block = memory_service.render_memory_block(
                     mem, first_name=decode_token_first_name(auth_token)
                 )
+                # Map [M1], [M2]... to real note ids so forget_about_user can
+                # act on what the agent sees.
+                tool_server.set_note_ids(
+                    profile,
+                    [n.get("id") for n in memory_service.usable_notes(mem) if n.get("id")],
+                )
 
             messages: List[Dict[str, str]] = [
                 {"role": "system", "content": system_prompt(memory_block or None)}
@@ -329,6 +336,20 @@ async def stream_message(
                     {"message": "The assistant returned an empty answer. Please try again."},
                 )
                 return
+
+            # Show sources only if the answer actually cited them.
+            #
+            # Pre-retrieval runs on every substantive turn, so a question like
+            # "who am I?" pulled five unrelated documents and the UI labelled
+            # the reply "Grounded in EU-FarmBook" while it cited nothing. That
+            # is worse than showing no sources: it dresses an ungrounded answer
+            # in the authority of the platform.
+            if sent_version and not re.search(r"\[\d+\]", answer):
+                logger.info(
+                    "Answer for profile=%s cited nothing — clearing the source rail", profile
+                )
+                yield await emit("sources", [])
+                yield await emit("grounding", {"mode": "general_fallback"})
 
             yield await emit("final", {"text": answer})
             yield await emit("timing", {"total_ms": int((time.monotonic() - started) * 1000)})

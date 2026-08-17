@@ -52,8 +52,14 @@ The fact it wants to store is:
 {fact}
 ---
 
-Answer YES only if the user's message ASSERTS that fact about THEMSELVES — their
-own farm, work, location, crops, livestock, role, or a preference they stated.
+Answer YES if the user's message ASSERTS that fact about THEMSELVES — their own
+farm, work, location, crops, livestock, role, or a preference they stated.
+
+Judge the SUBSTANCE, not the wording. "I live in the Netherlands" supports "the
+user is based in the Netherlands" and "the user farms in the Netherlands" when
+the conversation is about their farm. A CORRECTION is always YES: "I'm in the
+Netherlands, not France" asserts the Netherlands. Users must be able to fix what
+you know about them by saying so.
 
 Answer NO if:
 - the fact is merely the TOPIC of a question ("what is pig manure used for in

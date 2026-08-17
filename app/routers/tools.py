@@ -33,6 +33,10 @@ class RememberIn(BaseModel):
     fact: str = Field(min_length=1)
 
 
+class ForgetIn(BaseModel):
+    marker: str = Field(min_length=1, examples=["M2"])
+
+
 def _authorize(bridge_key: Optional[str], profile: Optional[str]) -> str:
     expected = S.HERMES_API_KEY  # the bridge shares the agent's key; one secret, one blast radius
     if not expected or not bridge_key or not hmac.compare_digest(bridge_key, expected):
@@ -59,6 +63,16 @@ async def search(
 ):
     profile = _authorize(x_bridge_key, x_euf_profile)
     return await tool_server.search_eu_farmbook(body.query, profile=profile, top_k=body.top_k)
+
+
+@router.post("/forget")
+async def forget(
+    body: ForgetIn,
+    x_bridge_key: Optional[str] = Header(default=None),
+    x_euf_profile: Optional[str] = Header(default=None),
+):
+    profile = _authorize(x_bridge_key, x_euf_profile)
+    return await tool_server.forget_about_user(body.marker, profile=profile)
 
 
 @router.post("/remember")

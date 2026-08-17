@@ -99,5 +99,28 @@ async def remember_about_user(fact: str) -> dict:
         return r.json()
 
 
+@mcp.tool()
+async def forget_about_user(marker: str) -> dict:
+    """Delete one remembered fact about the user, by its [M<n>] marker.
+
+    Use this when the user corrects or retracts something you have remembered —
+    "I'm in the Netherlands, not Italy" means forgetting the Italy note, not just
+    adding a second one. Name the marker exactly as shown in your background,
+    e.g. "M2".
+
+    Args:
+        marker: The [M<n>] marker of the note to forget.
+    """
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(
+            f"{ADAPTER_URL}/internal/tools/forget",
+            json={"marker": marker},
+            headers=_headers(),
+        )
+        if r.status_code != 200:
+            return {"ok": False, "error": f"Memory backend returned HTTP {r.status_code}"}
+        return r.json()
+
+
 if __name__ == "__main__":
     mcp.run()

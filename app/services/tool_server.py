@@ -71,6 +71,9 @@ class TurnContext:
     # The user's own words this turn. remember_about_user validates every
     # proposed fact against this: a fact the user did not assert is not a fact.
     user_message: str = ""
+    # Note ids in the order they were numbered [M1], [M2]... in the prompt, so
+    # the agent can name one to forget.
+    note_ids: List[int] = field(default_factory=list)
     started: float = field(default_factory=time.monotonic)
     sources: Optional[List[SourceItem]] = None
     version: int = 0
@@ -115,6 +118,13 @@ def begin_turn(
     _turns[profile] = TurnContext(
         auth_token=auth_token, user_uuid=user_uuid, user_message=user_message,
     )
+
+
+def set_note_ids(profile: str, note_ids: List[int]) -> None:
+    """Record which note id each [M<n>] marker in the prompt refers to."""
+    ctx = _live_context(profile)
+    if ctx:
+        ctx.note_ids = list(note_ids)
 
 
 def end_turn(profile: str) -> Optional[TurnContext]:
@@ -336,4 +346,34 @@ async def remember_about_user(fact: str, profile: str) -> Dict[str, Any]:
     ok = await memory_service.add_note(ctx.auth_token, text)
     if ok:
         ctx.remembered.append(text)
+    return {"ok": ok}
+
+
+async def forget_about_user(marker: str, profile: str) -> Dict[str, Any]:
+    """
+    Delete one remembered note, named by its [M<n>] marker from the prompt.
+
+    Without this the agent can only ADD. A user correcting "I'm in the
+    Netherlands, not Italy" would end up with both notes stored and the
+    contradiction surfacing in every later answer — which is precisely what
+    happened in the pilot.
+    """
+    from app.services import memory_service
+
+    ctx = _live_context(profile)
+    if not ctx:
+        return {"ok": False, "error": "No active turn for this profile."}
+
+    token = (marker or "").strip().upper().lstrip("[").rstrip("]").lstrip("M")
+    if not token.isdigit():
+        return {"ok": False, "error": "Name the note by its marker, e.g. M2."}
+
+    index = int(token)
+    if not 1 <= index <= len(ctx.note_ids):
+        return {"ok": False, "error": f"No remembered note numbered M{index} this turn."}
+
+    note_id = ctx.note_ids[index - 1]
+    ok = await memory_service.delete_note(ctx.auth_token, note_id)
+    if ok:
+        logger.info("Forgot note id=%s (M%s) for profile=%s", note_id, index, profile)
     return {"ok": ok}
