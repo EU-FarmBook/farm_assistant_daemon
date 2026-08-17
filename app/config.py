@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     # next request (its profile routing is a live directory scan).
     HERMES_DATA_DIR: str = "/opt/data"
 
+    # Address the user by first name when the verified token carries one. Set
+    # false to send the inference provider nothing that names the person: the
+    # remembered profile alone is pseudonymous, a name is not.
+    INCLUDE_USER_NAME: bool = True
+
     # --- Attachments (documents only) -----------------------------------------
     # Extracted at upload and held in-process, so these bound memory as much as
     # they bound the upload. Images are not supported in v3 — that needs the

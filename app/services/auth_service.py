@@ -112,6 +112,29 @@ def decode_token_email(auth_header: Optional[str]) -> Optional[str]:
     return None
 
 
+def decode_token_first_name(auth_header: Optional[str]) -> Optional[str]:
+    """
+    Best-effort FIRST name from a verified JWT. Never the surname, never the email.
+
+    Only safe on a token resolve_user_uuid() has already verified. Claim naming
+    varies by issuer and these tokens are minted by the public API rather than
+    here, so several spellings are tried and None is returned rather than a guess.
+
+    Deliberately just the first name: "Hello Anna" is worth something to a user,
+    while a full name plus an email address turns a pseudonymous profile at the
+    inference provider into an identified person, for no assistant value at all.
+    """
+    claims = decode_token_claims(auth_header)
+    for key in ("first_name", "given_name", "name", "full_name"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip() and "@" not in value:
+            first = value.strip().split()[0]
+            # Guard against a uuid or slug landing in a name claim.
+            if 1 < len(first) <= 40 and any(c.isalpha() for c in first):
+                return first
+    return None
+
+
 def _auth_base_url() -> str:
     return (S.AUTH_BACKEND_URL or S.CHAT_BACKEND_URL or "").rstrip("/")
 

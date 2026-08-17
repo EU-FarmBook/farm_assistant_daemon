@@ -24,7 +24,11 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.config import get_settings
 from app.services import attachment_service, memory_service, rate_limit, tool_server
-from app.services.auth_service import decode_token_email, resolve_user_uuid
+from app.services.auth_service import (
+    decode_token_email,
+    decode_token_first_name,
+    resolve_user_uuid,
+)
 from app.services.hermes_client import HermesUnavailable, complete_chat, stream_chat
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
 from app.services.scope import system_prompt
@@ -171,7 +175,9 @@ async def stream_message(
             memory_block = ""
             if not pause_personalization:
                 mem = await memory_service.load(auth_token)
-                memory_block = memory_service.render_memory_block(mem)
+                memory_block = memory_service.render_memory_block(
+                    mem, first_name=decode_token_first_name(auth_token)
+                )
 
             messages: List[Dict[str, str]] = [
                 {"role": "system", "content": system_prompt(memory_block or None)}

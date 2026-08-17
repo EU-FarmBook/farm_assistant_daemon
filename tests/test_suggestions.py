@@ -143,3 +143,37 @@ def test_memory_off_hides_facts_but_keeps_style():
     assert "Write for an expert" in block
     assert "Brittany" not in block
     assert "radishes" not in block
+
+
+# --- first-name personalisation -------------------------------------------
+
+def test_first_name_is_offered_but_email_never_is():
+    import base64
+    import json
+
+    from app.services.auth_service import decode_token_email, decode_token_first_name
+
+    def token(payload: dict) -> str:
+        body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        return f"Bearer header.{body}.sig"
+
+    assert decode_token_first_name(token({"first_name": "Pranav"})) == "Pranav"
+    assert decode_token_first_name(token({"name": "Bert De Vries"})) == "Bert"
+    # A surname adds nothing and an email address turns a pseudonymous profile at
+    # the inference provider into an identified person.
+    assert decode_token_first_name(token({"email": "x@y.be"})) is None
+    # A uuid in a name-shaped claim must not be read as a name.
+    assert decode_token_first_name(token({"sub": "45b75f62-3fa3-4b18"})) is None
+    # The email claim is still readable where it is legitimately needed — the
+    # domain gate — just never rendered into the prompt.
+    assert decode_token_email(token({"email": "x@y.be"})) == "x@y.be"
+
+
+def test_the_name_can_be_switched_off(monkeypatch):
+    from app.config import Settings
+    from app.services import memory_service
+    from app.services.memory_service import UserMemory, render_memory_block
+
+    monkeypatch.setattr(memory_service, "S", Settings(INCLUDE_USER_NAME=False, _env_file=None))
+    block = render_memory_block(UserMemory(about_you="I farm dairy."), first_name="Pranav")
+    assert "Pranav" not in block

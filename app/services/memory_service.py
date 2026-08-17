@@ -323,7 +323,7 @@ def _usable_notes(mem: UserMemory) -> List[str]:
     return [t for t in texts if t][:_MAX_PROMPT_NOTES]
 
 
-def render_memory_block(mem: UserMemory) -> str:
+def render_memory_block(mem: UserMemory, first_name: Optional[str] = None) -> str:
     """
     The per-turn personalization block: two sections, kept apart on purpose.
 
@@ -353,6 +353,11 @@ def render_memory_block(mem: UserMemory) -> str:
         preferences.append(f"How the user asked you to respond: {mem.custom_instructions}")
 
     background: List[str] = []
+    if first_name and S.INCLUDE_USER_NAME:
+        background.append(
+            f"The user's first name is {first_name}. Use it sparingly — a greeting or "
+            "a direct address, not every sentence."
+        )
     if mem.about_you:
         background.append(f"What the user has told you about themselves: {mem.about_you}")
     for note in _usable_notes(mem):
