@@ -68,6 +68,9 @@ class TurnContext:
     """
     auth_token: str
     user_uuid: str
+    # The user's own words this turn. remember_about_user validates every
+    # proposed fact against this: a fact the user did not assert is not a fact.
+    user_message: str = ""
     started: float = field(default_factory=time.monotonic)
     sources: Optional[List[SourceItem]] = None
     version: int = 0
@@ -105,9 +108,13 @@ class TurnContext:
 _turns: Dict[str, TurnContext] = {}
 
 
-def begin_turn(profile: str, *, auth_token: str, user_uuid: str) -> None:
+def begin_turn(
+    profile: str, *, auth_token: str, user_uuid: str, user_message: str = ""
+) -> None:
     """Open turn context for a profile, discarding anything left from before."""
-    _turns[profile] = TurnContext(auth_token=auth_token, user_uuid=user_uuid)
+    _turns[profile] = TurnContext(
+        auth_token=auth_token, user_uuid=user_uuid, user_message=user_message,
+    )
 
 
 def end_turn(profile: str) -> Optional[TurnContext]:
@@ -303,7 +310,7 @@ async def remember_about_user(fact: str, profile: str) -> Dict[str, Any]:
     Django's own ownership checks still apply — the adapter never gets a
     privileged write path into other users' memory.
     """
-    from app.services import memory_service
+    from app.services import memory_guard, memory_service
 
     ctx = _live_context(profile)
     if not ctx:
@@ -312,6 +319,19 @@ async def remember_about_user(fact: str, profile: str) -> Dict[str, Any]:
     text = (fact or "").strip()
     if not text:
         return {"ok": False, "error": "Empty fact."}
+
+    # The gate: the user's own message must assert this about them. Without it,
+    # the topic of a question becomes a durable fact about the person asking.
+    allowed, reason = await memory_guard.is_supported_by_user(text, ctx.user_message)
+    if not allowed:
+        logger.info("Refused memory %r for profile=%s: %s", text[:80], profile, reason)
+        return {
+            "ok": False,
+            "error": (
+                f"Not stored — {reason}. Only store what the user stated about "
+                "themselves in their own message."
+            ),
+        }
 
     ok = await memory_service.add_note(ctx.auth_token, text)
     if ok:

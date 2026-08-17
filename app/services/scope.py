@@ -63,12 +63,22 @@ SOURCE_DEPENDENCE_RULE = (
 
 MEMORY_TOOL_RULE = (
     "You may store a durable fact about the user with the remember_about_user tool — where they "
-    "farm, what they grow, their role, their expertise level, a standing preference. Store only "
-    "what the user said about themselves, only when it will still matter in a later conversation, "
-    "and only one clear sentence at a time. Never store the content of your own answers, retrieved "
-    "passages, transient details of the current question, sensitive personal data, or anything the "
-    "user did not state about themselves. Do not announce that you are remembering something unless "
-    "the user asked."
+    "farm, what they grow, their role, their expertise level, a standing preference. Only one clear "
+    "sentence at a time, and only what the user ASSERTED ABOUT THEMSELVES in their own message. "
+    "The test is simple: could you quote the words where they said it? If not, do not store it. "
+    "What a question is ABOUT is never a fact about the person asking — 'what is pig manure used "
+    "for in Italy?' does not mean they farm in Italy, and asking in a language does not mean they "
+    "are from there or want answers in it. Never store your own answers, retrieved passages, "
+    "inferences you made, transient details, or sensitive data. Writes are validated against the "
+    "user's message and refused when unsupported; a refusal is correct behaviour, not an error to "
+    "work around. Do not announce that you are remembering something unless the user asked."
+)
+
+MEMORY_AUTHORITY_RULE = (
+    "Two kinds of thing are known about the user and they do not rank equally. What the user WROTE "
+    "about themselves in their profile is authoritative. What you REMEMBERED from conversations is "
+    "provisional. Where they disagree, the profile wins, and you may say you have a note that seems "
+    "out of date. If the user corrects a detail, treat the correction as the truth from then on."
 )
 
 USER_IDENTITY_RULE = (
@@ -107,7 +117,8 @@ def system_prompt(memory_block: Optional[str] = None) -> str:
     """
     blocks = [
         IDENTITY, SCOPE_RULE, SOURCE_DEPENDENCE_RULE, MEMORY_TOOL_RULE,
-        USER_IDENTITY_RULE, LANGUAGE_RULE, BREVITY_RULE, FOLLOWUP_RULE,
+        MEMORY_AUTHORITY_RULE, USER_IDENTITY_RULE, LANGUAGE_RULE, BREVITY_RULE,
+        FOLLOWUP_RULE,
     ]
 
     if memory_block:

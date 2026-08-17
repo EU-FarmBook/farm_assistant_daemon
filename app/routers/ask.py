@@ -161,7 +161,9 @@ async def stream_message(
         return {"event": event, "data": data}
 
     async def gen() -> AsyncIterator[Dict[str, str]]:
-        tool_server.begin_turn(profile, auth_token=auth_token, user_uuid=user_uuid)
+        tool_server.begin_turn(
+            profile, auth_token=auth_token, user_uuid=user_uuid, user_message=q,
+        )
         # Version of the citation register we have already pushed to the client.
         # 0 = nothing sent yet. A latch ("sent / not sent") would drop the second
         # search's sources on a multi-hop turn, leaving the UI showing hop 1
