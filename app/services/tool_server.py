@@ -160,13 +160,24 @@ async def search_eu_farmbook(
     k = top_k if isinstance(top_k, int) and top_k > 0 else S.TOP_K
     payload = build_search_payload(AskIn(question=query, top_k=k))
 
+    # Same construction as farm_assistant_um's opensearch_client: Basic auth
+    # only when BOTH values are present, and identical headers. When either is
+    # blank the request goes out unauthenticated and scout answers 401 — which
+    # reads downstream as "the platform has nothing", so log the distinction.
     auth = None
     if S.OPENSEARCH_API_USR and S.OPENSEARCH_API_PWD:
         auth = httpx.BasicAuth(S.OPENSEARCH_API_USR, S.OPENSEARCH_API_PWD)
+    else:
+        logger.error(
+            "OPENSEARCH_API_USR/PWD are not both set — the search request will be "
+            "sent unauthenticated and scout will reject it."
+        )
+
+    headers = {"accept": "application/json", "Content-Type": "application/json"}
 
     try:
         async with httpx.AsyncClient(timeout=30.0, verify=S.VERIFY_SSL) as client:
-            items = await collect_os_items(client, payload, [1], {}, auth)
+            items = await collect_os_items(client, payload, [1], headers, auth)
     except httpx.HTTPError as e:
         logger.error(
             "Retrieval FAILED for profile=%s (url=%s): %s",
