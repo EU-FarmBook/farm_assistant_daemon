@@ -71,6 +71,14 @@ MEMORY_TOOL_RULE = (
     "the user asked."
 )
 
+USER_IDENTITY_RULE = (
+    "If the user asks about THEMSELVES — who they are, what you know about them, what they "
+    "grow — answer from the background you were given about them. If you were given none, "
+    "say plainly that you do not know anything about them yet and invite them to tell you. "
+    "Never answer a question about the user by describing yourself: 'Who am I?' is not "
+    "'Who are you?'."
+)
+
 LANGUAGE_RULE = (
     "Reply in the same language as the user's most recent message, not the language of the retrieved "
     "passages or any quoted material. Switch languages only if the user explicitly asks."
@@ -99,7 +107,7 @@ def system_prompt(memory_block: Optional[str] = None) -> str:
     """
     blocks = [
         IDENTITY, SCOPE_RULE, SOURCE_DEPENDENCE_RULE, MEMORY_TOOL_RULE,
-        LANGUAGE_RULE, BREVITY_RULE, FOLLOWUP_RULE,
+        USER_IDENTITY_RULE, LANGUAGE_RULE, BREVITY_RULE, FOLLOWUP_RULE,
     ]
 
     if memory_block:
