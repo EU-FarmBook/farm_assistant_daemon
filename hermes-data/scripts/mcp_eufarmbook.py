@@ -20,14 +20,36 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 ADAPTER_URL = os.environ.get("EUF_ADAPTER_URL", "http://adapter:8100").rstrip("/")
-BRIDGE_KEY = os.environ.get("EUF_BRIDGE_KEY", "")
 PROFILE = os.environ.get("EUF_PROFILE", "")
+
+# The key is read from disk on EVERY call, never captured at import.
+#
+# Hermes spawns this as a long-lived subprocess with the profile's env frozen at
+# spawn time. With the key in that env, rotating it left every running MCP
+# server presenting the old one — the adapter answered 401, the agent quietly
+# stopped being able to search, and the only clue was a 401 in a log nobody was
+# watching. A file re-read per call makes a key change take effect immediately,
+# with no restart of the agent container.
+BRIDGE_KEY_FILE = os.environ.get("EUF_BRIDGE_KEY_FILE", "/opt/data/bridge.key")
+
+
+def _bridge_key() -> str:
+    try:
+        with open(BRIDGE_KEY_FILE, encoding="utf-8") as fh:
+            key = fh.read().strip()
+            if key:
+                return key
+    except OSError:
+        pass
+    # Fall back to the spawn-time env so an older profile still works.
+    return os.environ.get("EUF_BRIDGE_KEY", "")
+
 
 mcp = FastMCP("eu-farmbook")
 
 
 def _headers() -> dict:
-    return {"X-Bridge-Key": BRIDGE_KEY, "X-EUF-Profile": PROFILE}
+    return {"X-Bridge-Key": _bridge_key(), "X-EUF-Profile": PROFILE}
 
 
 @mcp.tool()

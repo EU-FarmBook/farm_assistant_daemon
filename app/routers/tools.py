@@ -36,6 +36,15 @@ class RememberIn(BaseModel):
 def _authorize(bridge_key: Optional[str], profile: Optional[str]) -> str:
     expected = S.HERMES_API_KEY  # the bridge shares the agent's key; one secret, one blast radius
     if not expected or not bridge_key or not hmac.compare_digest(bridge_key, expected):
+        # Almost always a STALE key rather than an attack: Hermes froze the old
+        # value into a long-running MCP subprocess. Symptom is an agent that can
+        # no longer search while everything else works, so name the cause here.
+        logger.error(
+            "Bridge call rejected for profile=%s: key mismatch. If HERMES_API_KEY "
+            "changed, the agent's MCP server may hold the old one — it re-reads "
+            "/opt/data/bridge.key per call, so check that file is current.",
+            profile,
+        )
         raise HTTPException(status_code=401, detail="Unauthorized.")
     if not profile or not is_valid_profile_name(profile):
         raise HTTPException(status_code=400, detail="Missing or invalid profile.")

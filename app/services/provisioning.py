@@ -249,6 +249,25 @@ def ensure_profile(profile: str) -> bool:
     return True
 
 
+def write_bridge_key() -> None:
+    """
+    Publish the current bridge key where the MCP bridge reads it.
+
+    One file for all profiles, rewritten at startup, so rotating HERMES_API_KEY
+    takes effect on the next tool call rather than the next respawn of every
+    agent subprocess.
+    """
+    if not S.HERMES_API_KEY:
+        logger.warning("HERMES_API_KEY is empty — the MCP bridge cannot authenticate.")
+        return
+    path = _data_dir() / "bridge.key"
+    try:
+        path.write_text(S.HERMES_API_KEY, encoding="utf-8")
+        path.chmod(0o600)
+    except OSError as e:
+        logger.error("Could not write %s: %s", path, e)
+
+
 def refresh_all_profiles() -> int:
     """
     Re-render every existing profile from the current template. Returns the
