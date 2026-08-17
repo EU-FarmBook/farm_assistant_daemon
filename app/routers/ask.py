@@ -216,6 +216,13 @@ async def stream_message(
                         + "\nCite what you use by these numbers. Search again with "
                         "search_eu_farmbook if they do not cover the question.\n\n"
                     )
+                elif not prefetch.get("ok", True):
+                    # Search is down. Say so, and forbid the inference the model
+                    # would otherwise make from an empty result.
+                    logger.error("Pre-retrieval failed for profile=%s", profile)
+                    sources_block = (
+                        f"{prefetch.get('error')}\n\n"
+                    )
                 else:
                     sources_block = (
                         "A search of EU-FarmBook for this question returned nothing. "

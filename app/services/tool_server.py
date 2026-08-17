@@ -168,12 +168,22 @@ async def search_eu_farmbook(
         async with httpx.AsyncClient(timeout=30.0, verify=S.VERIFY_SSL) as client:
             items = await collect_os_items(client, payload, [1], {}, auth)
     except httpx.HTTPError as e:
-        logger.error("Retrieval failed for profile=%s: %s", profile, e)
-        # Tell the agent the truth. A tool that fails silently teaches the model
-        # to answer from its own weights — the exact failure this pilot must avoid.
+        logger.error(
+            "Retrieval FAILED for profile=%s (url=%s): %s",
+            profile, f"{S.OPENSEARCH_API_URL}{S.OS_RAG_API_PATH}", e,
+        )
+        # An outage and an empty index are different facts, and the difference
+        # reaches the user. Told "no passages", the model says EU-FarmBook has
+        # no material on the subject — a false claim about the platform derived
+        # from a network error. So say which one this is, explicitly.
         return {
             "ok": False,
-            "error": "EU-FarmBook search is unavailable right now.",
+            "error": (
+                "The EU-FarmBook search service is unreachable right now. This is a "
+                "technical fault, NOT evidence that the platform lacks material. Tell "
+                "the user search is temporarily unavailable and do not claim anything "
+                "about what EU-FarmBook does or does not contain."
+            ),
             "passages": [],
         }
 
@@ -194,6 +204,11 @@ async def search_eu_farmbook(
         question=query,
         top_k=k,
         max_context_chars=S.MAX_CONTEXT_CHARS,
+    )
+
+    logger.info(
+        "Retrieval for profile=%s query=%r -> %d items, %d contexts",
+        profile, query[:80], len(items), len(contexts),
     )
 
     if not contexts:
