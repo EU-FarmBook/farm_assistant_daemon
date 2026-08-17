@@ -183,10 +183,7 @@ async def stream_message(
                 )
                 # Map [M1], [M2]... to real note ids so forget_about_user can
                 # act on what the agent sees.
-                tool_server.set_note_ids(
-                    profile,
-                    [n.get("id") for n in memory_service.usable_notes(mem) if n.get("id")],
-                )
+                tool_server.set_notes(profile, memory_service.usable_notes(mem))
 
             messages: List[Dict[str, str]] = [
                 {"role": "system", "content": system_prompt(memory_block or None)}

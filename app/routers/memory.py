@@ -90,6 +90,21 @@ async def delete_memory(note_id: int, request: Request):
     return {"status": "ok"}
 
 
+@router.delete("/memory")
+async def forget_everything(request: Request):
+    """
+    Erase everything the assistant knows about the caller.
+
+    Destructive and irreversible, so it is its own endpoint rather than a flag
+    on another one — nothing should be able to trigger this as a side effect.
+    """
+    auth_token, user_uuid, _ = await _caller(request)
+    result = await memory_service.forget_everything(auth_token)
+    suggestion_service.invalidate(user_uuid)
+    logger.info("Memory wipe for uuid=%s: %s", user_uuid, result)
+    return {"status": "ok", **result}
+
+
 @router.post("/memory/summary")
 async def regenerate_summary(request: Request):
     """

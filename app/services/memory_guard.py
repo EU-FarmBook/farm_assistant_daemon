@@ -26,7 +26,8 @@ Three tiers, and only the middle one goes through here:
 """
 
 import logging
-from typing import Optional, Tuple
+from datetime import date
+from typing import List, Optional, Tuple
 
 import httpx
 
@@ -143,3 +144,83 @@ async def is_supported_by_user(fact: str, user_message: str) -> Tuple[bool, str]
     if verdict.strip().upper().startswith("YES"):
         return True, "supported by the user's own words"
     return False, "not asserted by the user about themselves"
+
+
+_SUPERSEDE_PROMPT = """An assistant is about to store a new fact about its user.
+
+New fact:
+---
+{fact}
+---
+
+Facts it already stores:
+{existing}
+
+Which existing fact, if any, does the new one REPLACE — because it is about the
+same attribute of the user (their location, their herd, the same preference) and
+the new one is more accurate, more specific, or a correction?
+
+Reply with the number alone (e.g. 2), or NONE if the new fact is about something
+different and both should be kept. Do not reply with anything else.
+"""
+
+
+def stamp(fact: str) -> str:
+    """
+    Prefix a fact with the date it was learned, absolutely.
+
+    mneme's rule, and it earns its keep: "convert relative dates to absolute ones
+    at write time". Without a date, two conflicting notes are indistinguishable —
+    nothing can tell which one is current, including the agent reading them back.
+    """
+    text = (fact or "").strip()
+    return f"{date.today().isoformat()} — {text}"
+
+
+async def find_superseded(fact: str, existing: List[str]) -> Optional[int]:
+    """
+    Index (1-based) of the existing note this new fact replaces, or None.
+
+    Append-only memory is how a user ends up recorded as farming in Italy AND in
+    Provence at the same time: each write was individually plausible, and nothing
+    ever reconciled them. Consolidating on write is mneme's discipline —
+    "consolidate duplicates instead of appending near-misses" — enforced here
+    rather than hoped for.
+
+    Returns None on any doubt or failure: merging two distinct facts loses
+    information, while failing to merge only leaves a tidy-up for later.
+    """
+    if not existing or not S.MISTRAL_API_KEY:
+        return None
+
+    listed = "\n".join(f"{i}. {text}" for i, text in enumerate(existing, start=1))
+    prompt = _SUPERSEDE_PROMPT.format(fact=fact.strip(), existing=listed)
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=3.0, read=15.0, write=5.0, pool=3.0),
+            verify=S.VERIFY_SSL,
+        ) as client:
+            r = await client.post(
+                f"{S.MISTRAL_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                json={
+                    "model": S.MEMORY_SUMMARY_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "max_tokens": 5,
+                },
+            )
+        if r.status_code != 200:
+            return None
+        choices = (r.json() or {}).get("choices") or []
+        verdict = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
+    except (httpx.HTTPError, ValueError, IndexError, AttributeError) as e:
+        logger.warning("Supersede check failed: %s", e)
+        return None
+
+    token = verdict.strip().rstrip(".").split()[0] if verdict.strip() else ""
+    if not token.isdigit():
+        return None
+    index = int(token)
+    return index if 1 <= index <= len(existing) else None

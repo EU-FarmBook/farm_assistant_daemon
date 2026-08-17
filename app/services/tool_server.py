@@ -74,6 +74,7 @@ class TurnContext:
     # Note ids in the order they were numbered [M1], [M2]... in the prompt, so
     # the agent can name one to forget.
     note_ids: List[int] = field(default_factory=list)
+    note_texts: List[str] = field(default_factory=list)
     started: float = field(default_factory=time.monotonic)
     sources: Optional[List[SourceItem]] = None
     version: int = 0
@@ -120,11 +121,15 @@ def begin_turn(
     )
 
 
-def set_note_ids(profile: str, note_ids: List[int]) -> None:
-    """Record which note id each [M<n>] marker in the prompt refers to."""
+def set_notes(profile: str, notes: List[Dict]) -> None:
+    """
+    Record the notes behind each [M<n>] marker: ids to forget by, texts to
+    consolidate against.
+    """
     ctx = _live_context(profile)
     if ctx:
-        ctx.note_ids = list(note_ids)
+        ctx.note_ids = [int(n["id"]) for n in notes if n.get("id")]
+        ctx.note_texts = [(n.get("note_text") or "").strip() for n in notes if n.get("id")]
 
 
 def end_turn(profile: str) -> Optional[TurnContext]:
@@ -343,10 +348,24 @@ async def remember_about_user(fact: str, profile: str) -> Dict[str, Any]:
             ),
         }
 
-    ok = await memory_service.add_note(ctx.auth_token, text)
+    # Consolidate rather than append. Two plausible writes about the same
+    # attribute leave the user recorded as farming in two countries at once,
+    # with nothing to say which is current.
+    superseded = await memory_guard.find_superseded(text, ctx.note_texts)
+    replaced = None
+    if superseded is not None and superseded <= len(ctx.note_ids):
+        old_id = ctx.note_ids[superseded - 1]
+        if await memory_service.delete_note(ctx.auth_token, old_id):
+            replaced = ctx.note_texts[superseded - 1]
+            logger.info(
+                "Memory M%s superseded for profile=%s: %r -> %r",
+                superseded, profile, replaced[:60], text[:60],
+            )
+
+    ok = await memory_service.add_note(ctx.auth_token, memory_guard.stamp(text))
     if ok:
         ctx.remembered.append(text)
-    return {"ok": ok}
+    return {"ok": ok, **({"replaced": replaced} if replaced else {})}
 
 
 async def forget_about_user(marker: str, profile: str) -> Dict[str, Any]:

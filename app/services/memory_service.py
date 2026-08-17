@@ -191,6 +191,43 @@ async def delete_note(auth_token: str, note_id: int) -> bool:
         return False
 
 
+async def forget_everything(auth_token: str) -> Dict[str, int]:
+    """
+    Erase what the assistant knows about this user.
+
+    Scope, decided deliberately and mirrored in the UI copy:
+
+      REMOVED  every memory note, the cached memory summary, and `about_you` —
+               i.e. everything that describes WHO the user is, whether the agent
+               inferred it or the user wrote it.
+      KEPT     tone, characteristics and custom instructions. Those describe HOW
+               answers should read, not who the person is, and silently wiping a
+               user's writing preferences is not what "delete my memory" means.
+      SEPARATE chat history. Conversations are deleted per chat in the sidebar;
+               a memory wipe that also destroyed transcripts would be a
+               surprise, and an unrecoverable one.
+
+    Deletes note by note because Django exposes no bulk endpoint. Returns what
+    was removed so the caller can tell the user.
+    """
+    mem = await load(auth_token)
+    deleted = 0
+    for note in mem.notes:
+        note_id = note.get("id")
+        if note_id and await delete_note(auth_token, int(note_id)):
+            deleted += 1
+
+    status, _ = await fetch_raw(
+        auth_token, "/chat/user/settings/", method="PATCH",
+        json_body={"memory_summary": "", "about_you": ""},
+    )
+    if status != 200:
+        logger.warning("Could not clear the profile text: HTTP %s", status)
+
+    logger.info("Erased %d memory note(s) and the stored profile text", deleted)
+    return {"notes_deleted": deleted, "profile_cleared": int(status == 200)}
+
+
 async def save_about_you(auth_token: str, *, about_you: Optional[str] = None,
                          custom_instructions: Optional[str] = None) -> bool:
     """Persist the user's own hand-authored profile text (the USER.md analogue)."""

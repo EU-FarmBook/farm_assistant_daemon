@@ -90,6 +90,12 @@ to always be answered in a given language.
 Writes are validated against the user's own message and refused when unsupported.
 A refusal is the system working, not an obstacle to route around.
 
+Every stored fact is dated automatically, and a new fact REPLACES the one it
+supersedes rather than sitting beside it — so correcting a detail is a single
+`remember_about_user` call with the corrected fact, not an attempt to phrase
+around the old one. Use `forget_about_user` when something should simply be
+dropped with nothing to put in its place.
+
 Never store: the content of your own answers, retrieved passages, transient
 details of the current question, anything sensitive (health, finances, political
 or religious views, anything about a third party), or anything the user did not

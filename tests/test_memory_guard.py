@@ -117,3 +117,58 @@ def test_the_language_rule_is_stated_to_the_judge():
     # preference for Hungarian answers, which then fought the language rule.
     assert "Hungarian" in memory_guard._VERDICT_PROMPT
     assert "LANGUAGE" in memory_guard._VERDICT_PROMPT
+
+
+# --- consolidation and dating --------------------------------------------
+
+def test_every_note_is_dated_absolutely():
+    from datetime import date
+
+    stamped = memory_guard.stamp("The user farms dairy in the Netherlands.")
+    # Without a date, two conflicting notes are indistinguishable and nothing —
+    # including the agent reading them back — can tell which is current.
+    assert stamped.startswith(date.today().isoformat())
+    assert "farms dairy" in stamped
+
+
+@pytest.mark.asyncio
+async def test_a_correction_supersedes_the_note_it_replaces(monkeypatch):
+    _verdict(monkeypatch, "1")
+    index = await memory_guard.find_superseded(
+        "The user farms in the Netherlands.",
+        ["The user farms in Italy.", "The user grows radishes."],
+    )
+    # Appending instead of replacing is how one user ended up recorded as
+    # farming in Italy AND Provence simultaneously.
+    assert index == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_fact_supersedes_nothing(monkeypatch):
+    _verdict(monkeypatch, "NONE")
+    assert await memory_guard.find_superseded(
+        "The user keeps bees.", ["The user farms in the Netherlands."],
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_range_answer_is_ignored(monkeypatch):
+    _verdict(monkeypatch, "7")
+    assert await memory_guard.find_superseded("x", ["only one note"]) is None
+
+
+@pytest.mark.asyncio
+async def test_no_existing_notes_means_nothing_to_supersede(monkeypatch):
+    _verdict(monkeypatch, "1")
+    assert await memory_guard.find_superseded("The user keeps bees.", []) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_supersede_check_keeps_both(monkeypatch):
+    def explode(**_k):
+        raise memory_guard.httpx.HTTPError("provider down")
+
+    monkeypatch.setattr(memory_guard.httpx, "AsyncClient", explode)
+    # Merging two distinct facts loses information; failing to merge only leaves
+    # a tidy-up. So doubt resolves to keeping both.
+    assert await memory_guard.find_superseded("x", ["y"]) is None

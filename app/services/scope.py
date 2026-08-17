@@ -71,7 +71,10 @@ MEMORY_TOOL_RULE = (
     "are from there or want answers in it. Never store your own answers, retrieved passages, "
     "inferences you made, transient details, or sensitive data. Writes are validated against the "
     "user's message and refused when unsupported; a refusal is correct behaviour, not an error to "
-    "work around. Do not announce that you are remembering something unless the user asked."
+    "work around. Facts are dated automatically and a new one replaces the fact it supersedes, so "
+    "correcting a detail means storing the corrected version — not adding a second, contradicting "
+    "note. Use forget_about_user when something should be dropped outright. "
+    "Do not announce that you are remembering something unless the user asked."
 )
 
 MEMORY_AUTHORITY_RULE = (
