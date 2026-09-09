@@ -152,6 +152,7 @@ def _render_config(profile: str) -> str:
         template
         .replace("__EUF_PROFILE__", profile)
         .replace("__EUF_BRIDGE_KEY__", S.HERMES_API_KEY)
+        .replace("__EUF_MODEL__", S.HERMES_MODEL)
     )
     if "__EUF_" in rendered:
         raise ProvisioningError("config.yaml template has unsubstituted placeholders")

@@ -177,3 +177,36 @@ def test_the_name_can_be_switched_off(monkeypatch):
     monkeypatch.setattr(memory_service, "S", Settings(INCLUDE_USER_NAME=False, _env_file=None))
     block = render_memory_block(UserMemory(about_you="I farm dairy."), first_name="Pranav")
     assert "Pranav" not in block
+
+
+# --- structured profile ---------------------------------------------------
+
+def test_a_structured_profile_is_preserved_verbatim():
+    from app.services.memory_service import UserMemory, render_memory_block
+
+    profile = "## Farm\n40 ha arable\n\n## Location\nFriesland, Netherlands"
+    block = render_memory_block(UserMemory(about_you=profile))
+    # Flattening it into one bullet throws away what makes a written profile
+    # better than inferred notes: the user decided what matters and how.
+    assert "## Farm" in block
+    assert "40 ha arable" in block
+    assert "What the user has told you about themselves:" not in block
+
+
+def test_the_written_profile_outranks_remembered_notes():
+    from app.services.memory_service import UserMemory, render_memory_block
+
+    block = render_memory_block(UserMemory(
+        about_you="## Location\nFriesland, Netherlands",
+        notes=[{"note_text": "Farms in Italy", "confidence": 0.9}],
+    ))
+    assert "AUTHORITATIVE" in block
+    assert block.index("own profile") < block.index("Background you have learned")
+
+
+def test_unstructured_text_still_works():
+    from app.services.memory_service import UserMemory, render_memory_block
+
+    block = render_memory_block(UserMemory(about_you="I farm dairy in Brittany."))
+    # No headings: keep the old inline form rather than inventing structure.
+    assert "What the user has told you about themselves: I farm dairy in Brittany." in block

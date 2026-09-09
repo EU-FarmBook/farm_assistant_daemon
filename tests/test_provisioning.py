@@ -226,3 +226,23 @@ def test_startup_refresh_survives_a_broken_profile(configured, volume):
     (volume / "profiles" / "junk").mkdir()          # not a profile at all
     (volume / "profiles" / UUID_A / ".env").unlink()  # half-provisioned
     assert provisioning.refresh_all_profiles() >= 0   # must not raise
+
+
+def test_the_model_comes_from_config_not_the_template(configured, volume, monkeypatch):
+    from app.config import Settings
+
+    template = volume / "config.yaml"
+    template.write_text("model:\n  default: __EUF_MODEL__\n" + template.read_text(), encoding="utf-8")
+
+    s = Settings(HERMES_PILOT_UUIDS=UUID_A, HERMES_DATA_DIR=str(volume),
+                 HERMES_API_KEY="bridge-key", HERMES_MODEL="magistral-small-latest",
+                 _env_file=None)
+    monkeypatch.setattr(provisioning, "S", s)
+    monkeypatch.setattr(provisioning, "get_settings", lambda: s)
+
+    provisioning.ensure_profile(UUID_A)
+    rendered = (volume / "profiles" / UUID_A / "config.yaml").read_text()
+    # Comparing models must be an env change plus a restart, not a config edit
+    # followed by hand-re-rendering every profile.
+    assert "default: magistral-small-latest" in rendered
+    assert "__EUF_MODEL__" not in rendered

@@ -67,3 +67,12 @@ def test_the_endpoints_added_for_suggestions_and_attachments_exist():
         ("get", "/chatbot/api/chats/{session_id}/attachments"),
     ]:
         assert path in paths and method in paths[path], f"missing {method.upper()} {path}"
+
+
+def test_export_endpoints_exist():
+    """The composer's export flow calls both; without them "give me that as a
+    PDF" silently does nothing, which reads as the assistant ignoring you."""
+    paths = app.openapi()["paths"]
+    assert "post" in paths["/chatbot/api/files/export"]
+    assert "post" in paths["/chatbot/api/export-intent"]
+    assert "post" in paths["/chatbot/api/chats/{session_id}/title"]

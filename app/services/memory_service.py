@@ -396,13 +396,28 @@ def render_memory_block(mem: UserMemory, first_name: Optional[str] = None) -> st
     if mem.custom_instructions:
         preferences.append(f"How the user asked you to respond: {mem.custom_instructions}")
 
+    # The user's own profile goes in verbatim when they have given it structure.
+    # Flattening "## Farm / 40 ha arable" into one bullet after a colon throws
+    # away exactly what makes a written profile better than inferred notes: the
+    # user decided what matters and how it is organised. mneme's USER.md is 145
+    # structured lines and is the single biggest reason that agent knows its
+    # user well.
+    profile_block = ""
+    if mem.about_you and "##" in mem.about_you:
+        profile_block = (
+            "## The user's own profile\n"
+            "They wrote this themselves. It is AUTHORITATIVE: where anything you "
+            "remembered disagrees with it, this wins.\n\n"
+            f"{mem.about_you.strip()}"
+        )
+
     background: List[str] = []
     if first_name and S.INCLUDE_USER_NAME:
         background.append(
             f"The user's first name is {first_name}. Use it sparingly — a greeting or "
             "a direct address, not every sentence."
         )
-    if mem.about_you:
+    if mem.about_you and not profile_block:
         background.append(f"What the user has told you about themselves: {mem.about_you}")
     # Numbered so the agent can name one to forget: without a handle, a wrong
     # note can only ever be corrected by ADDING a contradicting one, and the
@@ -413,6 +428,8 @@ def render_memory_block(mem: UserMemory, first_name: Optional[str] = None) -> st
     sections: List[str] = []
     if preferences:
         sections.append(_preferences_section(preferences))
+    if profile_block:
+        sections.append(profile_block)
     if background:
         body = "\n".join(f"- {p}" for p in background)
         sections.append(

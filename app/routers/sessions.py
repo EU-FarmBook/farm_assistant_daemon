@@ -14,7 +14,13 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import get_settings
-from app.schemas import ChatSessionCreateIn, ChatSessionPatchIn, ChatTurnLogIn, MessageFeedbackIn
+from app.schemas import (
+    ChatSessionCreateIn,
+    ChatSessionPatchIn,
+    ChatTurnLogIn,
+    MessageFeedbackIn,
+    TitleIn,
+)
 from app.services import attachment_service
 from app.services.auth_service import resolve_user_uuid
 
@@ -31,6 +37,18 @@ async def _require_token(request: Request) -> str:
     if not user_uuid:
         raise HTTPException(status_code=401, detail="Authentication required.")
     return auth_token
+
+
+async def _django_optional(method: str, path: str, auth_token: str, **kwargs) -> tuple[int, Dict]:
+    """Like _django, but returns the status instead of raising — for best-effort writes."""
+    headers = {"Authorization": auth_token if auth_token.startswith("Bearer ") else f"Bearer {auth_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, verify=S.VERIFY_SSL) as client:
+            r = await client.request(method, f"{S.CHAT_BACKEND_URL}{path}", headers=headers, **kwargs)
+        return r.status_code, {}
+    except httpx.HTTPError as e:
+        logger.warning("Optional Django call %s %s failed: %s", method, path, e)
+        return 0, {}
 
 
 async def _django(method: str, path: str, auth_token: str, **kwargs) -> Dict[str, Any]:
@@ -126,6 +144,64 @@ async def list_attachments(session_id: str, request: Request):
             for a in attachment_service.for_session(session_id, user_uuid or "")
         ],
     }
+
+
+@router.post("/{session_id}/title")
+async def generate_title(session_id: str, body: TitleIn, request: Request):
+    """
+    Name a chat in 2-3 words, and store it.
+
+    Without this the sidebar shows the whole first question — "What are the
+    farming activities in NL these days?" — which is unscannable once there are
+    twenty of them. Same prompt shape as farm_assistant_um's build_title_prompt,
+    so v2 and v3 chats read alike in a list.
+
+    A plain completion, not an agent turn, and best-effort: a chat that keeps its
+    default name is a cosmetic loss, so every failure returns the fallback rather
+    than an error.
+    """
+    auth_token = await _require_token(request)
+    fallback = (body.question or "").strip()[:60] or "New chat"
+
+    if not S.MISTRAL_API_KEY:
+        return {"status": "ok", "title": fallback, "generated": False}
+
+    prompt = (
+        "Generate a short, specific chat title using 2-3 words only. "
+        "No punctuation, no quotes, no emojis, no trailing period. "
+        "Write it in the same language as the user's question. "
+        "Output ONLY the title text.\n\n"
+        f"User's question: {(body.question or '').strip()[:500]}\n"
+    )
+    if body.answer:
+        prompt += f"Assistant's response: {body.answer.strip()[:200]}...\n"
+    prompt += "\nTitle:"
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, verify=S.VERIFY_SSL) as client:
+            r = await client.post(
+                f"{S.MISTRAL_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                json={
+                    "model": S.MEMORY_SUMMARY_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 16,
+                },
+            )
+        choices = (r.json() or {}).get("choices") or [] if r.status_code == 200 else []
+        raw = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
+    except (httpx.HTTPError, ValueError, IndexError, AttributeError) as e:
+        logger.warning("Title generation failed: %s", e)
+        raw = ""
+
+    # Models like to wrap a title in quotes or end it with a full stop.
+    title = " ".join(raw.strip().strip("\"' .").split())[:60] or fallback
+
+    status, _ = await _django_optional(
+        "PATCH", f"/chat/sessions/{session_id}/", auth_token, json={"title": title},
+    )
+    return {"status": "ok", "title": title, "generated": bool(raw.strip())}
 
 
 @router.post("/log-turn")

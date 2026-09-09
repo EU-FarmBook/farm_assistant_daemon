@@ -11,9 +11,11 @@ fail with a clear message rather than half-working.
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 
+from app.schemas import DocumentExportIn
 from app.services import attachment_service
+from app.services.document_export_service import generate_document
 from app.services.attachment_service import AttachmentError
 from app.services.auth_service import decode_token_email, resolve_user_uuid
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
@@ -87,4 +89,50 @@ async def attachment_url(doc_id: str, request: Request):
     raise HTTPException(
         status_code=501,
         detail="Preview is not available for attachments in this experimental assistant.",
+    )
+
+
+@router.post("/export")
+async def export_document(body: DocumentExportIn, request: Request):
+    """
+    Turn an assistant answer into a downloadable document.
+
+    Copied wholesale from farm_assistant_um — same formats, same renderer, same
+    source appendix — so a PDF from v3 is indistinguishable from a v2 one. There
+    is nothing agent-specific about turning markdown into a file, and a second
+    implementation would only be a second set of layout bugs.
+    """
+    await _owner(request)
+
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Export content is required.")
+
+    try:
+        document = generate_document(
+            title=body.title.strip() or "Farm Assistant response",
+            content=content,
+            export_format=body.format,
+            sources=[source.model_dump(exclude_none=True) for source in body.sources],
+        )
+    except ImportError as error:
+        # A format whose optional library is missing degrades to a clear message
+        # rather than a 500 the user cannot act on.
+        raise HTTPException(
+            status_code=503, detail=f"{body.format.upper()} export is not installed.",
+        ) from error
+    except Exception as error:
+        logger.exception("Export failed for format=%s", body.format)
+        raise HTTPException(
+            status_code=500, detail=f"Unable to generate {body.format.upper()} document.",
+        ) from error
+
+    return Response(
+        content=document.payload,
+        media_type=document.media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{document.filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

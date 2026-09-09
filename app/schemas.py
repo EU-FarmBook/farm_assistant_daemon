@@ -58,6 +58,23 @@ class MessageFeedbackIn(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
+class DocumentExportIn(BaseModel):
+    title: str = ""
+    content: str = ""
+    format: str = Field(examples=["pdf", "docx", "csv", "xlsx", "pptx"])
+    sources: List[SourceItem] = Field(default_factory=list)
+
+
+class ExportIntentIn(BaseModel):
+    query: str = ""
+    previous_assistant_message: str = ""
+
+
+class TitleIn(BaseModel):
+    question: str = ""
+    answer: str = ""
+
+
 class ChatTurnLogIn(BaseModel):
     session_uuid: Optional[str] = None
     user_message: str

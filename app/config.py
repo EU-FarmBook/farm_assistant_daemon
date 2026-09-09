@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # addressed as /p/<profile>/v1/... and owns its own MEMORY.md and USER.md.
     # Off = every request lands on the default profile and therefore shares one
     # memory file, which defeats the point of the pilot; see README.
+    # The agent's model. Substituted into each profile's config.yaml, so this is
+    # the one place to change when comparing models. Must be a model the
+    # configured provider serves.
+    HERMES_MODEL: str = "mistral-large-latest"
     HERMES_MULTIPLEX_PROFILES: bool = True
     HERMES_REQUEST_TIMEOUT_SECONDS: float = 180.0
 

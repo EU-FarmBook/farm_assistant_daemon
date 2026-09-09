@@ -22,6 +22,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
+from app.schemas import ExportIntentIn
 from app.services.auth_service import resolve_user_uuid
 
 S = get_settings()
@@ -83,6 +84,54 @@ def _parse(content: str) -> List[str]:
         for entry in (parsed if isinstance(parsed, list) else [])
         if isinstance(entry, str) and entry.strip()
     ][:3]
+
+
+@router.post("/export-intent")
+async def export_intent(body: ExportIntentIn, request: Request):
+    """
+    Does this message ask for the previous answer as a file, and in what format?
+
+    The frontend detects the obvious cases itself ("as a PDF"); this catches the
+    rest, in any language. Returns `format: null` when the answer is no, which is
+    the common case — so it fails towards "just answer the question".
+    """
+    auth_token = request.headers.get("Authorization", "")
+    if not (await resolve_user_uuid(auth_token) if auth_token else None):
+        return {"format": None}
+
+    query = (body.query or "").strip()
+    if not query or not S.MISTRAL_API_KEY:
+        return {"format": None}
+
+    prompt = (
+        "Does this message ask for the previous answer to be turned into a downloadable "
+        "file? Reply with exactly one of: PDF, DOCX, CSV, XLSX, PPTX, or NONE.\n"
+        "Reply NONE unless the message clearly asks for a file or a download.\n\n"
+        f"Message: {query[:500]}"
+    )
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0),
+            verify=S.VERIFY_SSL,
+        ) as client:
+            r = await client.post(
+                f"{S.MISTRAL_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                json={
+                    "model": S.MEMORY_SUMMARY_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "max_tokens": 5,
+                },
+            )
+        choices = (r.json() or {}).get("choices") or [] if r.status_code == 200 else []
+        verdict = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
+    except (httpx.HTTPError, ValueError, IndexError, AttributeError):
+        return {"format": None}
+
+    fmt = verdict.strip().upper().strip(".")
+    return {"format": fmt.lower() if fmt in {"PDF", "DOCX", "CSV", "XLSX", "PPTX"} else None}
 
 
 @router.post("/follow-ups", response_model=FollowUpsOut)

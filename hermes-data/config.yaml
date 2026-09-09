@@ -45,9 +45,19 @@ providers:
     base_url: https://api.mistral.ai/v1
     key_env: MISTRAL_API_KEY
 
+# `__EUF_MODEL__` is substituted per profile from HERMES_MODEL in the adapter's
+# .env, so trying a different model is an env change plus a restart rather than a
+# config edit and a re-render. The startup reconcile pushes it to every existing
+# profile, which makes an A/B on the same questions cheap:
+#
+#   mistral-large-latest     strong generalist, the current default
+#   magistral-small-latest   reasoning model — closer to what mneme runs, and
+#                            the config notes there argue reasoning matters most
+#                            for tool-call reliability and judgement about memory
+#   mistral-medium-latest    cheaper, for volume
 model:
   provider: custom:mistral
-  default: mistral-large-latest
+  default: __EUF_MODEL__
 
 fallback_providers:
   - provider: custom:mistral
