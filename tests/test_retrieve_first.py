@@ -14,7 +14,9 @@ from app.routers import ask
 
 
 def _source() -> str:
-    return inspect.getsource(ask.stream_message)
+    # The turn implementation moved out of the route when the
+    # non-streaming door was added; both doors consume this one generator.
+    return inspect.getsource(ask._turn_events)
 
 
 def test_a_substantive_turn_retrieves_before_the_model_runs():

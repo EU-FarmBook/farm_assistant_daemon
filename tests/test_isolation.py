@@ -128,3 +128,110 @@ def test_blank_backend_resolves_from_fa_env_not_to_nothing():
 def test_auth_is_verified_reports_the_kill_switch():
     assert Settings(FA_ENV="prd", _env_file=None).auth_is_verified()
     assert not Settings(FA_ENV="prd", AUTH_TOKEN_INTROSPECTION=False, _env_file=None).auth_is_verified()
+
+
+# --- The introspection failure path --------------------------------------
+#
+# The uuid this returns is the only thing deciding which agent, whose memory and
+# whose transcript a request reaches. So an introspection FAILURE must not be
+# answered with the uuid the token claims about itself — except in bare local
+# dev, where there is no Django to ask.
+
+import httpx  # noqa: E402  (kept beside the tests it serves)
+
+from app.services import auth_service  # noqa: E402
+
+
+def _unsigned(uuid: str) -> str:
+    """A token anyone can mint: alg=none, no signature, any uuid."""
+    import base64
+    import json as _json
+
+    def seg(d):
+        return base64.urlsafe_b64encode(_json.dumps(d).encode()).rstrip(b"=").decode()
+
+    return "Bearer " + seg({"alg": "none"}) + "." + seg({"uuid": uuid}) + ".x"
+
+
+class _Unreachable:
+    def __init__(self, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, *a, **k):
+        raise httpx.ConnectError("django is down")
+
+
+def _client_returning(status: int):
+    class _Resp:
+        status_code = status
+
+    class _C(_Unreachable):
+        async def post(self, *a, **k):
+            return _Resp()
+
+    return _C
+
+
+def _auth_env(monkeypatch, fa_env: str, client):
+    s = Settings(FA_ENV=fa_env, CHAT_BACKEND_URL="https://django.example", _env_file=None)
+    monkeypatch.setattr(auth_service, "S", s)
+    monkeypatch.setattr(auth_service.httpx, "AsyncClient", client)
+    auth_service._verdicts.clear()
+
+
+async def test_unreachable_django_denies_on_a_deployed_host(monkeypatch):
+    _auth_env(monkeypatch, "prd", _Unreachable)
+    # The impersonation this closes: an unsigned token naming any victim was
+    # accepted for as long as Django was unhealthy, and main.py's startup gate
+    # never noticed because auth_is_verified() only checks configuration.
+    assert await auth_service.resolve_user_uuid(_unsigned("victim-uuid")) is None
+
+
+async def test_upstream_5xx_denies_on_a_deployed_host(monkeypatch):
+    _auth_env(monkeypatch, "prd", _client_returning(503))
+    assert await auth_service.resolve_user_uuid(_unsigned("victim-uuid")) is None
+
+
+async def test_outages_are_not_cached_as_a_verdict(monkeypatch):
+    """A denial during an outage must not outlive it by the cache TTL."""
+    _auth_env(monkeypatch, "prd", _Unreachable)
+    token = _unsigned("uuid-a")
+    assert await auth_service.resolve_user_uuid(token) is None
+    assert auth_service._verdicts == {}
+
+    monkeypatch.setattr(auth_service.httpx, "AsyncClient", _client_returning(200))
+    assert await auth_service.resolve_user_uuid(token) == "uuid-a"
+
+
+async def test_local_dev_still_falls_back_without_a_django(monkeypatch):
+    """Bare local dev has nothing to introspect against; that is the one case."""
+    _auth_env(monkeypatch, "local", _Unreachable)
+    assert await auth_service.resolve_user_uuid(_unsigned("uuid-a")) == "uuid-a"
+
+
+async def test_a_rejected_token_is_still_rejected(monkeypatch):
+    """Django saying 401 is a verdict, not an outage — and it is cached."""
+    _auth_env(monkeypatch, "prd", _client_returning(401))
+    assert await auth_service.resolve_user_uuid(_unsigned("uuid-a")) is None
+    assert len(auth_service._verdicts) == 1
+
+
+# --- The private tool surface --------------------------------------------
+
+def test_a_non_ascii_bridge_key_is_a_401_not_a_500():
+    """
+    Starlette decodes headers as latin-1, and hmac.compare_digest raises
+    TypeError on non-ASCII str — so one byte over 0x7F turned the intended 401
+    into an unhandled 500 with a traceback.
+    """
+    from app.routers.tools import _same_key
+
+    assert _same_key("k", "k") is True
+    assert _same_key("k", "other") is False
+    assert _same_key("é", "k") is False  # must not raise

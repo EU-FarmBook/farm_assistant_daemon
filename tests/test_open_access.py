@@ -18,8 +18,8 @@ UUID_B = "9d1f0c31-1111-4c22-9aaa-2b3c4d5e6f70"
 
 @pytest.fixture
 def volume(tmp_path):
-    (tmp_path / "config.yaml").write_text(
-        'env:\n  EUF_BRIDGE_KEY: "__EUF_BRIDGE_KEY__"\n  EUF_PROFILE: "__EUF_PROFILE__"\n',
+    (tmp_path / "config.template.yaml").write_text(
+        'env:\n  EUF_BRIDGE_KEY_FILE: /opt/data/bridge.key\n  EUF_PROFILE: "__EUF_PROFILE__"\n',
         encoding="utf-8",
     )
     (tmp_path / "SOUL.md").write_text("# scope contract\n", encoding="utf-8")
@@ -27,7 +27,7 @@ def volume(tmp_path):
 
 
 def _open(monkeypatch, volume, **kwargs):
-    s = Settings(HERMES_OPEN_ACCESS=True, HERMES_DATA_DIR=str(volume),
+    s = Settings(HERMES_OPEN_ACCESS=True, HERMES_DATA_DIR=str(volume), HERMES_MODEL="test-model",
                  HERMES_API_KEY="k", _env_file=None, **kwargs)
     monkeypatch.setattr(provisioning, "S", s)
     monkeypatch.setattr(provisioning, "get_settings", lambda: s)

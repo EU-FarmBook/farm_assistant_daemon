@@ -30,6 +30,10 @@ case "${1:-}" in
     ;;
   *)
     [[ -d .venv ]] && source .venv/bin/activate
+    # /opt/data is the CONTAINER's view of the volume and does not exist on the
+    # host, so a bare run has to be pointed at the checkout or provisioning
+    # writes nowhere. An explicit HERMES_DATA_DIR still wins.
+    export HERMES_DATA_DIR="${HERMES_DATA_DIR:-$PWD/hermes-data}"
     exec uvicorn app.main:app --reload --host 127.0.0.1 --port 8100
     ;;
 esac

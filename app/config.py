@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     # debugging against a stubbed Django.
     REQUIRE_CHAT_AUTH: bool = True
 
+    # --- CORS -----------------------------------------------------------------
+    # Comma-separated origin allowlist for a BROWSER client. Empty (the default)
+    # installs no CORS middleware at all, which is the right default for a
+    # server-to-server API and matches how this service has always behaved —
+    # but it means a browser page on any other origin cannot call it, because
+    # the preflight goes unanswered. There is deliberately no wildcard: this
+    # service is handed platform JWTs, and "any origin may send us a bearer
+    # token" is not a thing to switch on by accident.
+    CORS_ALLOW_ORIGINS: str = ""
+
     # --- Caller API-key gate (same scheme as farm_assistant_um) ---
     # csv of `label:sha256hex`. Plaintext keys never touch this config.
     REQUIRE_API_KEY: bool = True
@@ -81,8 +91,10 @@ class Settings(BaseSettings):
     # memory file, which defeats the point of the pilot; see README.
     # The agent's model. Substituted into each profile's config.yaml, so this is
     # the one place to change when comparing models. Must be a model the
-    # configured provider serves.
-    HERMES_MODEL: str = "mistral-large-latest"
+    # configured provider serves, with reliable TOOL CALLING and at least
+    # Hermes' 64k context floor — the agent is useless without the first and
+    # stalls on the second. No default: see MEMORY_SUMMARY_MODEL below.
+    HERMES_MODEL: str = ""
     HERMES_MULTIPLEX_PROFILES: bool = True
     HERMES_REQUEST_TIMEOUT_SECONDS: float = 180.0
 
@@ -92,7 +104,7 @@ class Settings(BaseSettings):
     #
     # What this turns off is a *bound*, not a login check: identity is still
     # verified against Django on every request. What becomes unbounded is spend
-    # (every turn is billed to MISTRAL_API_KEY), disk (one profile directory per
+    # (every turn is billed to LLM_API_KEY), disk (one profile directory per
     # user who ever visits), and how many people's remembered profiles are sent
     # to a third party. RATE_LIMIT_* below is what keeps the first of those
     # survivable — do not run open access with the limiter disabled.
@@ -151,17 +163,41 @@ class Settings(BaseSettings):
     ATTACHMENT_MAX_BYTES: int = 15 * 1024 * 1024
     ATTACHMENT_MAX_CHARS: int = 120_000
 
-    # --- Memory summary ------------------------------------------------------
-    # The settings dialog's "Memory summary / Update" button. This is the ONE
-    # place the adapter calls a model directly instead of going through the
-    # agent: summarising a user's stored facts must not run an agent loop, must
-    # not touch the conversation transcript, and must not be able to trigger a
-    # retrieval. A plain completion is the right tool.
-    # Blank key = the endpoint returns the cached summary and declines to
-    # regenerate, which degrades the button rather than the dialog.
-    MISTRAL_API_URL: str = "https://api.mistral.ai"
-    MISTRAL_API_KEY: str = ""
-    MEMORY_SUMMARY_MODEL: str = "mistral-medium-latest"
+    # --- Inference provider ---------------------------------------------------
+    # ONE OpenAI-compatible endpoint, used two ways: the agent reaches it through
+    # the `providers` block in hermes-data/config.yaml (which is handed this key
+    # via each profile's .env), and the adapter calls it directly for the four
+    # side-features that must NOT run an agent turn — the memory summary, the
+    # memory-write guard, the opening suggestions and the follow-up chips. None
+    # of those may run a tool loop, enter the transcript, or trigger a retrieval,
+    # which is why they are plain completions rather than agent calls.
+    #
+    # Currently Scaleway Generative APIs: EU-hosted, which matters because every
+    # turn ships the user's remembered profile to whoever serves inference.
+    # Swapping provider is these two values plus the model ids; nothing else.
+    #
+    # No trailing /v1 here — the call sites append `/v1/chat/completions`. The
+    # agent's own base_url in config.yaml DOES include it. A project-scoped
+    # Scaleway endpoint (https://api.scaleway.ai/<project-id>) also works and is
+    # what the console hands out; both forms answer.
+    LLM_API_URL: str = "https://api.scaleway.ai"
+    # Blank key = the memory summary returns its cached value, the memory guard
+    # refuses every write (it fails closed), and suggestions fall back to the
+    # static set. Degraded, not broken.
+    LLM_API_KEY: str = ""
+    # The cheap model for those four side-features. Deliberately no default: a
+    # wrong model id fails at call time with a provider error that reads like a
+    # bug in this service. Set it from what the key can actually reach —
+    #   curl -s $LLM_API_URL/v1/models -H "Authorization: Bearer $LLM_API_KEY"
+    #
+    # It MUST NOT be a reasoning model. These calls ask for a single word at
+    # max_tokens=5, and a reasoning model spends that budget on its `reasoning`
+    # field and returns content: "" — which the memory guard reads as "cannot
+    # validate" and fails closed on, silently refusing every memory write.
+    # Measured on Scaleway: of nine chat models, only llama-3.3-70b-instruct
+    # answered directly; gpt-oss-120b, glm-5.2, gemma-4, deepseek-v4-flash and
+    # both qwen3.x models all came back empty.
+    MEMORY_SUMMARY_MODEL: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -195,6 +231,16 @@ class Settings(BaseSettings):
     def auth_is_verified(self) -> bool:
         """True when tokens are actually introspected rather than trusted."""
         return bool(self.AUTH_TOKEN_INTROSPECTION and (self.AUTH_BACKEND_URL or self.CHAT_BACKEND_URL))
+
+    def cors_origins(self) -> list[str]:
+        """Parse CORS_ALLOW_ORIGINS into a list. Wildcards are rejected, not honoured."""
+        out = []
+        for raw in (self.CORS_ALLOW_ORIGINS or "").split(","):
+            origin = raw.strip().rstrip("/")
+            if not origin or origin == "*":
+                continue
+            out.append(origin)
+        return out
 
     def api_keys_map(self) -> dict[str, str]:
         """

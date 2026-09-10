@@ -14,6 +14,13 @@ container: it shares the data volume and writes a directory. The earlier design
 assumed provisioning required the CLI, which would have meant an operator running
 a script before any new user could chat.
 
+**Two config files, and only one is source.** `config.template.yaml` is the
+documented template this module renders from; the agent never reads it.
+`config.yaml` is GENERATED — it is the default profile's live config, and the
+agent container normalises it on startup, stripping every comment. Keeping the
+template on a separate path is what stops that normalisation from eating the
+documentation; `write_default_config()` below keeps the generated file in step.
+
 **Under open access this runs for every new user**, which is the intent: someone
 arrives, chats, and their agent exists. The bounds that keep that survivable are
 elsewhere — `rate_limit` caps turns per user, and `MAX_PROFILES` (checked below)
@@ -40,6 +47,16 @@ _PROFILE_DIRS = (
     "memories", "sessions", "skills", "skins", "logs", "plans", "workspace", "cron", "home",
 )
 
+# The documented source, and the generated file the agent owns. See the module
+# docstring — the split exists because the agent rewrites the latter.
+_TEMPLATE_NAME = "config.template.yaml"
+_DEFAULT_CONFIG_NAME = "config.yaml"
+
+# The profile id the default config is rendered for. It never serves a turn (the
+# adapter always addresses /p/<profile>/), so a tool call arriving tagged with it
+# finds no active turn and is refused — which is the intended outcome.
+_DEFAULT_PROFILE = "default"
+
 
 class ProvisioningError(Exception):
     """The profile could not be created; the caller must not fall back to a shared one."""
@@ -51,6 +68,10 @@ def _data_dir() -> Path:
 
 def profile_dir(profile: str) -> Path:
     return _data_dir() / "profiles" / profile
+
+
+def template_path() -> Path:
+    return _data_dir() / _TEMPLATE_NAME
 
 
 def is_provisioned(profile: str) -> bool:
@@ -79,17 +100,16 @@ def _render_profile_env() -> str:
         "# it is regenerated whenever the adapter's keys change.",
         f"API_SERVER_KEY={S.HERMES_API_KEY}",
     ]
-    if S.MISTRAL_API_KEY:
-        # `provider: custom` in config.yaml reads OPENAI_* — Mistral is not a
-        # Hermes provider id, it is an OpenAI-compatible endpoint reached this
-        # way. Same seam a self-hosted vLLM would use.
-        # The name here must match `key_env` in the providers.mistral block of
+    if S.LLM_API_KEY:
+        # The name here must match `key_env` in the `providers` block of
         # config.yaml — that is the whole contract for a named custom provider:
         # config says which variable holds the key, this writes that variable.
-        lines.append(f"MISTRAL_API_KEY={S.MISTRAL_API_KEY}")
+        # Get it wrong and the agent authenticates against :8642 fine, then
+        # fails its first completion.
+        lines.append(f"LLM_API_KEY={S.LLM_API_KEY}")
     else:
         logger.warning(
-            "MISTRAL_API_KEY is unset — provisioned profiles will have no provider "
+            "LLM_API_KEY is unset — provisioned profiles will have no provider "
             "credential and the agent will fail on its first completion."
         )
     return "\n".join(lines) + "\n"
@@ -112,7 +132,7 @@ def _config_is_current(profile: str) -> bool:
     (the provider, the toolsets, the memory switches, the MCP block) has to
     reach existing profiles or they keep running yesterday's configuration
     while the template says otherwise. That is not hypothetical: fixing
-    `provider: mistral` -> `custom` in the template changed nothing for the one
+    a `provider:` fix in the template changed nothing for the one
     profile that already existed, because only the keys were being compared.
 
     Same for SOUL.md: it carries the scope contract, and a profile silently
@@ -147,11 +167,23 @@ def _render_config(profile: str) -> str:
     from the agent is matched to the turn that is in flight. Two profiles sharing
     it would cross user turns.
     """
-    template = (_data_dir() / "config.yaml").read_text(encoding="utf-8")
+    # An empty model id renders `default:` as null and the agent fails at its
+    # first completion with a provider error that reads like a bug in here.
+    # Refuse at provisioning instead, where the message names the cause.
+    if not S.HERMES_MODEL.strip():
+        raise ProvisioningError(
+            "HERMES_MODEL is unset — set it to a model the provider serves "
+            "(list them: curl -s $LLM_API_URL/v1/models -H \"Authorization: Bearer $LLM_API_KEY\")"
+        )
+
+    # NOTE what is NOT substituted: the bridge key. The rendered config goes to
+    # a git-tracked file (hermes-data/config.yaml) and to per-profile configs at
+    # mode 0644, so it must stay credential-free. The template points the bridge
+    # at /opt/data/bridge.key (0600, written by write_bridge_key) instead.
+    template = template_path().read_text(encoding="utf-8")
     rendered = (
         template
         .replace("__EUF_PROFILE__", profile)
-        .replace("__EUF_BRIDGE_KEY__", S.HERMES_API_KEY)
         .replace("__EUF_MODEL__", S.HERMES_MODEL)
     )
     if "__EUF_" in rendered:
@@ -205,9 +237,10 @@ def ensure_profile(profile: str) -> bool:
         raise ProvisioningError(f"profile limit reached ({max_profiles})")
 
     data_dir = _data_dir()
-    if not (data_dir / "config.yaml").is_file():
+    if not template_path().is_file():
         raise ProvisioningError(
-            f"No config.yaml template at {data_dir} — is the hermes-data volume mounted?"
+            f"No {_TEMPLATE_NAME} at {data_dir} — is the hermes-data volume mounted? "
+            "(config.yaml is the generated default-profile config, not the template.)"
         )
 
     config_text = _render_config(profile)
@@ -248,6 +281,63 @@ def ensure_profile(profile: str) -> bool:
 
     logger.info("Provisioned Hermes profile %s", profile)
     return True
+
+
+def _strip_comments(text: str) -> str:
+    """
+    Drop whole-line comments and collapse the blank runs they leave behind.
+
+    Only lines that are entirely a comment: a `#` inside a value is left alone.
+    The point is to hand the agent a file it has nothing left to normalise, so
+    its startup rewrite stops showing up as a 48-line diff on a tracked file.
+    """
+    kept: list[str] = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        if not line.strip() and (not kept or not kept[-1].strip()):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip() + "\n"
+
+
+def write_default_config() -> bool:
+    """
+    Render the template into the default profile's live `config.yaml`.
+
+    Returns True if the file was written, False if it was already current.
+
+    This is the one place that file should ever be written by us. It matters
+    because the DEFAULT profile is what a request without a /p/<profile>/ prefix
+    lands on, and a config the agent generated for itself would come with the
+    built-in memory on and the full platform toolset — terminal included — which
+    is the opposite of every other decision in this deployment.
+
+    Comments are stripped: the agent normalises this file on startup anyway, so
+    handing it a comment-free rendering keeps a tracked file from churning.
+
+    Never raises. A startup that cannot write this still serves; the profiles
+    that actually answer users are rendered separately.
+    """
+    target = _data_dir() / _DEFAULT_CONFIG_NAME
+    try:
+        if not S.HERMES_MODEL.strip():
+            logger.warning(
+                "HERMES_MODEL is unset — leaving %s as it is. The default profile keeps "
+                "whatever config it already has, which on a fresh volume is the agent's "
+                "own (memory on, full toolset).", target,
+            )
+            return False
+
+        rendered = _strip_comments(_render_config(_DEFAULT_PROFILE))
+        if target.is_file() and target.read_text(encoding="utf-8") == rendered:
+            return False
+        target.write_text(rendered, encoding="utf-8")
+        logger.info("Wrote %s from %s", target, _TEMPLATE_NAME)
+        return True
+    except (OSError, ProvisioningError) as e:
+        logger.error("Could not write the default profile config at %s: %s", target, e)
+        return False
 
 
 def write_bridge_key() -> None:

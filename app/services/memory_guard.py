@@ -110,7 +110,7 @@ async def is_supported_by_user(fact: str, user_message: str) -> Tuple[bool, str]
     if not (user_message or "").strip():
         return False, "no user message to check the fact against"
 
-    if not S.MISTRAL_API_KEY:
+    if not S.LLM_API_KEY:
         return False, "no provider key available to validate the fact"
 
     prompt = _VERDICT_PROMPT.format(message=user_message.strip()[:2000], fact=fact.strip())
@@ -121,8 +121,8 @@ async def is_supported_by_user(fact: str, user_message: str) -> Tuple[bool, str]
             verify=S.VERIFY_SSL,
         ) as client:
             r = await client.post(
-                f"{S.MISTRAL_API_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                f"{S.LLM_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.LLM_API_KEY}"},
                 json={
                     "model": S.MEMORY_SUMMARY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
@@ -190,7 +190,7 @@ async def find_superseded(fact: str, existing: List[str]) -> Optional[int]:
     Returns None on any doubt or failure: merging two distinct facts loses
     information, while failing to merge only leaves a tidy-up for later.
     """
-    if not existing or not S.MISTRAL_API_KEY:
+    if not existing or not S.LLM_API_KEY:
         return None
 
     listed = "\n".join(f"{i}. {text}" for i, text in enumerate(existing, start=1))
@@ -202,8 +202,8 @@ async def find_superseded(fact: str, existing: List[str]) -> Optional[int]:
             verify=S.VERIFY_SSL,
         ) as client:
             r = await client.post(
-                f"{S.MISTRAL_API_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                f"{S.LLM_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.LLM_API_KEY}"},
                 json={
                     "model": S.MEMORY_SUMMARY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],

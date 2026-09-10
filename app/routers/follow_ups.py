@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.schemas import ExportIntentIn
-from app.services.auth_service import resolve_user_uuid
+from app.routers._access import spend_allowed
 
 S = get_settings()
 logger = logging.getLogger("farm-assistant-hermes.follow-ups")
@@ -95,12 +95,13 @@ async def export_intent(body: ExportIntentIn, request: Request):
     rest, in any language. Returns `format: null` when the answer is no, which is
     the common case — so it fails towards "just answer the question".
     """
-    auth_token = request.headers.get("Authorization", "")
-    if not (await resolve_user_uuid(auth_token) if auth_token else None):
-        return {"format": None}
+    # Gated because it spends: see routers/_access.
+    _, _, refusal = await spend_allowed(request)
+    if refusal:
+        return {"format": None, "reason": refusal}
 
     query = (body.query or "").strip()
-    if not query or not S.MISTRAL_API_KEY:
+    if not query or not S.LLM_API_KEY:
         return {"format": None}
 
     prompt = (
@@ -116,8 +117,8 @@ async def export_intent(body: ExportIntentIn, request: Request):
             verify=S.VERIFY_SSL,
         ) as client:
             r = await client.post(
-                f"{S.MISTRAL_API_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                f"{S.LLM_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.LLM_API_KEY}"},
                 json={
                     "model": S.MEMORY_SUMMARY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
@@ -141,16 +142,16 @@ async def follow_ups(body: FollowUpsIn, request: Request) -> FollowUpsOut:
     every failure mode — chips are a convenience, and the answer above them is
     already delivered.
     """
-    auth_token = request.headers.get("Authorization", "")
-    user_uuid = await resolve_user_uuid(auth_token) if auth_token else None
-    if not user_uuid:
-        return FollowUpsOut(follow_ups=[], meta={"reason": "unauthenticated"})
+    # Gated because it spends: see routers/_access.
+    _, _, refusal = await spend_allowed(request)
+    if refusal:
+        return FollowUpsOut(follow_ups=[], meta={"reason": refusal})
 
     question = (body.user_message or "").strip()
     answer = (body.assistant_message or "").strip()
     if not question or not answer:
         return FollowUpsOut(follow_ups=[], meta={"reason": "empty_input"})
-    if not S.MISTRAL_API_KEY:
+    if not S.LLM_API_KEY:
         return FollowUpsOut(follow_ups=[], meta={"reason": "no_provider_key"})
 
     prompt = _PROMPT.format(question=question[:1500], answer=answer[:4000])
@@ -161,8 +162,8 @@ async def follow_ups(body: FollowUpsIn, request: Request) -> FollowUpsOut:
             verify=S.VERIFY_SSL,
         ) as client:
             r = await client.post(
-                f"{S.MISTRAL_API_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                f"{S.LLM_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.LLM_API_KEY}"},
                 json={
                     "model": S.MEMORY_SUMMARY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],

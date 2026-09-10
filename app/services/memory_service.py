@@ -96,6 +96,12 @@ _MIN_CONFIDENCE = 0.6
 
 @dataclass
 class UserMemory:
+    # False when Django could not be read, as distinct from "this user has no
+    # memory". load() fails soft to an empty profile, which is right for a turn
+    # (personalization is not worth losing the answer over) but wrong for
+    # anything that must not act on a guess — a compare-and-swap cannot compare
+    # against an unread value, and callers should be able to tell a user with a
+    # blank profile from a backend that is down.
     about_you: str = ""
     custom_instructions: str = ""
     memory_enabled: bool = True
@@ -103,6 +109,7 @@ class UserMemory:
     base_tone: str = "default"
     characteristics: List[str] = field(default_factory=list)
     notes: List[Dict] = field(default_factory=list)
+    loaded: bool = True
 
 
 def _auth_header(auth_token: str) -> Dict[str, str]:
@@ -123,7 +130,16 @@ async def load(auth_token: Optional[str]) -> UserMemory:
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, verify=S.VERIFY_SSL) as client:
             settings_res = await client.get(f"{S.CHAT_BACKEND_URL}/chat/user/settings/", headers=headers)
-            if settings_res.status_code == 200:
+            if settings_res.status_code != 200:
+                # Previously silent: a 4xx/5xx here looked exactly like a user
+                # with no profile, so a misconfigured realm degraded every turn
+                # with nothing in the log to say why.
+                logger.warning(
+                    "Django returned HTTP %s for settings; continuing without personalization.",
+                    settings_res.status_code,
+                )
+                mem.loaded = False
+            else:
                 data = (settings_res.json() or {}).get("settings") or {}
                 mem.memory_enabled = bool(data.get("memory_enabled", True))
                 mem.about_you = (data.get("about_you") or "").strip()[:MAX_INSTRUCTION_LENGTH]
@@ -150,9 +166,15 @@ async def load(auth_token: Optional[str]) -> UserMemory:
                 if notes_res.status_code == 200:
                     payload = notes_res.json() or {}
                     mem.notes = payload.get("memory_notes") or payload.get("results") or []
+                else:
+                    logger.warning(
+                        "Django returned HTTP %s for memory notes; continuing without them.",
+                        notes_res.status_code,
+                    )
+                    mem.loaded = False
     except httpx.HTTPError as e:
         logger.warning("Memory load failed, continuing without it: %s", e)
-        return UserMemory(memory_enabled=mem.memory_enabled)
+        return UserMemory(memory_enabled=mem.memory_enabled, loaded=False)
 
     return mem
 
@@ -300,8 +322,8 @@ async def generate_summary(mem: UserMemory) -> Optional[str]:
     if not notes and not mem.about_you:
         return ""
 
-    if not S.MISTRAL_API_KEY:
-        logger.info("No MISTRAL_API_KEY set; memory summary cannot be regenerated.")
+    if not S.LLM_API_KEY:
+        logger.info("No LLM_API_KEY set; memory summary cannot be regenerated.")
         return None
 
     facts = "\n".join(f"- {n}" for n in notes)
@@ -321,8 +343,8 @@ async def generate_summary(mem: UserMemory) -> Optional[str]:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=3.0, read=30.0, write=5.0, pool=3.0),
                                      verify=S.VERIFY_SSL) as client:
             r = await client.post(
-                f"{S.MISTRAL_API_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                f"{S.LLM_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.LLM_API_KEY}"},
                 json={
                     "model": S.MEMORY_SUMMARY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
@@ -350,17 +372,66 @@ async def save_summary(auth_token: str, summary: str) -> bool:
     return status == 200
 
 
+def _confidence_of(note: Dict) -> Optional[float]:
+    """
+    The note's confidence, or None when the row does not carry one.
+
+    None means "no opinion", NOT zero. Django owns these rows and add_note()
+    sends only `note_text`, so treating a missing field as 0 made every note
+    this service writes fail its own threshold — see usable_notes.
+    """
+    for key in ("confidence", "confidence_score"):
+        value = note.get(key)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None  # unparseable is not the same as low
+    return None
+
+
 def usable_notes(mem: UserMemory) -> List[Dict]:
     """
     The notes eligible for the prompt, as rows (so callers keep their ids).
 
+    A row is dropped only when it carries a confidence and that confidence is
+    BELOW the threshold. A row with no confidence field is kept.
+
+    That distinction is the whole bug this shape had: the filter was
+    `float(n.get("confidence") or n.get("confidence_score") or 0) >= 0.6`, and
+    add_note() posts `{"note_text": ...}` with no confidence at all. So unless
+    Django happened to default the field and serialize it back, every note the
+    agent wrote was silently invisible — while GET /users/me/memory (a plain
+    pass-through) still listed them in the settings dialog, so nothing looked
+    wrong. Three things fail together on this list: the Background block in
+    render_memory_block, the [M<n>] marker -> id map that forget_about_user
+    needs, and the existing-notes list find_superseded consolidates against
+    (with nothing to supersede, remember_about_user appends duplicates forever).
+
     Confidence-filter BEFORE trimming, so a solid note is never lost to a shaky one.
     """
-    confident = [
-        n for n in mem.notes
-        if float(n.get("confidence") or n.get("confidence_score") or 0) >= _MIN_CONFIDENCE
-    ]
-    return [n for n in confident if (n.get("note_text") or "").strip()][:_MAX_PROMPT_NOTES]
+    rows = [n for n in mem.notes if (n.get("note_text") or "").strip()]
+
+    keep: List[Dict] = []
+    dropped = 0
+    for note in rows:
+        confidence = _confidence_of(note)
+        if confidence is None or confidence >= _MIN_CONFIDENCE:
+            keep.append(note)
+        else:
+            dropped += 1
+
+    if dropped:
+        logger.info(
+            "Dropped %d of %d memory note(s) below confidence %.2f", dropped, len(rows), _MIN_CONFIDENCE
+        )
+    if rows and not keep:
+        # The signal that was missing when this failed silently.
+        logger.warning(
+            "All %d memory note(s) were filtered out — the user has stored memories that "
+            "will not reach the prompt. Check the confidence values Django returns.", len(rows)
+        )
+    return keep[:_MAX_PROMPT_NOTES]
 
 
 def _usable_notes(mem: UserMemory) -> List[str]:
@@ -482,7 +553,16 @@ def render_documents(mem: UserMemory) -> List[MemoryDocument]:
     the user writes, one the agent writes. The settings UI edits the first and
     reviews the second.
     """
-    user_doc = "\n\n".join(p for p in (mem.about_you, mem.custom_instructions) if p)
+    # about_you ONLY. It used to concatenate custom_instructions as well, while
+    # PATCH /memory/documents/USER.md writes the whole buffer back into
+    # about_you — so a GET, edit, PATCH round trip appended the instructions to
+    # about_you and left them in custom_instructions too, duplicating them on
+    # every save. Worse, the two are not equivalent: render_memory_block treats
+    # custom_instructions as STYLE ("these govern only tone, format and level of
+    # detail") and about_you as authoritative knowledge, so the round trip
+    # promoted style text to fact. Custom instructions have their own surface,
+    # GET/PATCH /users/me/settings; this document is the profile.
+    user_doc = mem.about_you or ""
     agent_doc = "\n".join(f"- {t}" for t in [(n.get("note_text") or "").strip() for n in mem.notes] if t)
 
     return [

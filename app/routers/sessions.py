@@ -21,6 +21,7 @@ from app.schemas import (
     MessageFeedbackIn,
     TitleIn,
 )
+from app.routers._access import spend_allowed
 from app.services import attachment_service
 from app.services.auth_service import resolve_user_uuid
 
@@ -163,7 +164,14 @@ async def generate_title(session_id: str, body: TitleIn, request: Request):
     auth_token = await _require_token(request)
     fallback = (body.question or "").strip()[:60] or "New chat"
 
-    if not S.MISTRAL_API_KEY:
+    # Gated because it spends on the provider: see routers/_access. Like the
+    # other two billed side-features it degrades rather than failing — a chat
+    # keeping its default name is a cosmetic loss.
+    _, _, refusal = await spend_allowed(request)
+    if refusal:
+        return {"status": "ok", "title": fallback, "generated": False, "reason": refusal}
+
+    if not S.LLM_API_KEY:
         return {"status": "ok", "title": fallback, "generated": False}
 
     prompt = (
@@ -180,8 +188,8 @@ async def generate_title(session_id: str, body: TitleIn, request: Request):
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, verify=S.VERIFY_SSL) as client:
             r = await client.post(
-                f"{S.MISTRAL_API_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                f"{S.LLM_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.LLM_API_KEY}"},
                 json={
                     "model": S.MEMORY_SUMMARY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],

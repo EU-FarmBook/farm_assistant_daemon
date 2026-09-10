@@ -25,6 +25,15 @@ logger = logging.getLogger("farm-assistant.extractors")
 
 # Extraction caps shared across formats (mirrors the original PDF limits).
 MAX_CHARS = 240_000
+
+# Ceiling on the UNCOMPRESSED size of a zip-based document (.docx/.xlsx/.pptx
+# are zip containers). The caps below all apply to text ALREADY EXTRACTED, which
+# is too late: openpyxl/python-docx/python-pptx expand the container before this
+# module ever sees a character, so a small file whose parts inflate enormously
+# takes the whole adapter's memory with it — a single-replica service with no
+# memory limit in compose, so that is every in-flight stream. Checking the
+# central directory first costs microseconds and needs no decompression.
+MAX_UNCOMPRESSED_BYTES = 120 * 1024 * 1024
 MAX_PDF_PAGES = 80
 MAX_TABLE_ROWS = 500          # per CSV file / spreadsheet sheet
 MAX_SHEETS = 10
@@ -245,8 +254,36 @@ _EXTRACTORS = {
 }
 
 
+def _reject_oversized_archive(path: Path) -> None:
+    """
+    Refuse a zip-based document whose declared uncompressed size is absurd.
+
+    Reads only the central directory — no decompression — so a hostile file
+    cannot make the check itself expensive. `file_size` is attacker-declared,
+    but a bomb has to declare its size to be expanded, and a file that lies
+    small then expands large is caught by the per-format caps below.
+    """
+    import zipfile
+
+    if not zipfile.is_zipfile(path):
+        return
+    try:
+        with zipfile.ZipFile(path) as archive:
+            total = sum(max(0, info.file_size) for info in archive.infolist())
+    except (zipfile.BadZipFile, OSError) as e:
+        raise RuntimeError(f"That file is not a readable document: {e}") from e
+
+    if total > MAX_UNCOMPRESSED_BYTES:
+        raise RuntimeError(
+            "That document expands to "
+            f"{total // (1024 * 1024)} MB, over the "
+            f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB extraction limit."
+        )
+
+
 def extract_text(path: Path, filename: str) -> str:
     """Extract plain text from a supported attachment; raises on unsupported/broken files."""
+    _reject_oversized_archive(Path(path))
     suffix = Path(filename or "").suffix.lower() or path.suffix.lower()
     extractor = _EXTRACTORS.get(suffix)
     if extractor is None:

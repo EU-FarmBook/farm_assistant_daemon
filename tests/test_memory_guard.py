@@ -16,7 +16,7 @@ from app.services import memory_guard
 
 @pytest.fixture(autouse=True)
 def keyed(monkeypatch):
-    monkeypatch.setattr(memory_guard, "S", Settings(MISTRAL_API_KEY="k", _env_file=None))
+    monkeypatch.setattr(memory_guard, "S", Settings(LLM_API_KEY="k", _env_file=None))
 
 
 def _verdict(monkeypatch, answer: str):
@@ -105,7 +105,7 @@ async def test_no_user_message_means_no_memory(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_without_a_provider_key_nothing_is_stored(monkeypatch):
-    monkeypatch.setattr(memory_guard, "S", Settings(MISTRAL_API_KEY="", _env_file=None))
+    monkeypatch.setattr(memory_guard, "S", Settings(LLM_API_KEY="", _env_file=None))
     allowed, _ = await memory_guard.is_supported_by_user(
         "The user farms dairy in the Netherlands.", "I farm dairy in the Netherlands.",
     )

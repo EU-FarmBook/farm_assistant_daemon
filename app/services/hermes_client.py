@@ -77,6 +77,7 @@ async def stream_chat(
     session_id: Optional[str],
     messages: List[Dict[str, str]],
     model: str = "hermes-agent",
+    max_tokens: Optional[int] = None,
 ) -> AsyncIterator[str]:
     """
     Stream assistant text from Hermes as plain content deltas.
@@ -92,6 +93,12 @@ async def stream_chat(
         "messages": messages,
         "stream": True,
     }
+    # A caller-supplied cap, when there is one. NOTE this bounds the whole
+    # completion including the model's own reasoning tokens, which for the
+    # configured reasoning model can consume the budget before any answer text
+    # exists — the route refuses an unusably small value for that reason.
+    if max_tokens and max_tokens > 0:
+        payload["max_tokens"] = max_tokens
 
     timeout = httpx.Timeout(
         connect=10.0,

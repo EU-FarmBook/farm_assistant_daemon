@@ -3,7 +3,8 @@
 The private tool surface the MCP bridge calls.
 
 Reachable only from the agent container, on the compose network, and only with
-the shared bridge key. It is NOT part of the public chat API and is excluded
+the shared bridge key — the Traefik router rule excludes /internal/ so it is not
+served on the public hostname (it was, until that clause was added). It is NOT part of the public chat API and is excluded
 from the schema: nothing a browser can reach should be able to drive a
 retrieval or write a memory note out of band.
 """
@@ -37,9 +38,25 @@ class ForgetIn(BaseModel):
     marker: str = Field(min_length=1, examples=["M2"])
 
 
+def _same_key(presented: str, expected: str) -> bool:
+    """
+    Constant-time compare that cannot raise.
+
+    hmac.compare_digest on two `str` throws TypeError unless both are ASCII, and
+    Starlette decodes header bytes as latin-1 — so a single byte above 0x7F in
+    X-Bridge-Key turned an intended 401 into an unhandled 500 with a traceback.
+    Comparing the encoded bytes keeps the timing property and just fails to
+    match, which is the correct answer for a wrong key.
+    """
+    return hmac.compare_digest(
+        presented.encode("utf-8", "surrogateescape"),
+        expected.encode("utf-8", "surrogateescape"),
+    )
+
+
 def _authorize(bridge_key: Optional[str], profile: Optional[str]) -> str:
     expected = S.HERMES_API_KEY  # the bridge shares the agent's key; one secret, one blast radius
-    if not expected or not bridge_key or not hmac.compare_digest(bridge_key, expected):
+    if not expected or not bridge_key or not _same_key(bridge_key, expected):
         # Almost always a STALE key rather than an attack: Hermes froze the old
         # value into a long-running MCP subprocess. Symptom is an agent that can
         # no longer search while everything else works, so name the cause here.

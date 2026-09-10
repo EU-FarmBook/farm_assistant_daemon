@@ -25,6 +25,31 @@ class GeneratedDocument:
     media_type: str
 
 
+def content_disposition(filename: str) -> str:
+    """
+    An attachment header that survives a non-Latin-1 filename.
+
+    Starlette encodes header values as latin-1, and _safe_filename keeps unicode
+    word characters (re.UNICODE), so a Greek, Polish, Czech, Croatian, Hungarian,
+    Romanian, Latvian, Slovene or Maltese title raised UnicodeEncodeError and the
+    export 500'd — on a platform serving 24 languages. RFC 6266: an ASCII
+    `filename` for old clients plus a percent-encoded `filename*` that every
+    current browser prefers.
+    """
+    from urllib.parse import quote
+
+    # Split the extension off FIRST. Dropping non-ASCII from the whole name left
+    # a Greek title as bare "csv" — the extension masquerading as the filename.
+    stem, dot, suffix = filename.rpartition(".")
+    if not dot:
+        stem, suffix = filename, ""
+    ascii_stem = stem.encode("ascii", "ignore").decode("ascii").strip(" .-_")
+    if not ascii_stem:
+        ascii_stem = "farm-assistant-response"     # nothing survived transliteration
+    ascii_name = f"{ascii_stem}.{suffix}" if suffix else ascii_stem
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
 def _safe_filename(title: str, export_format: ExportFormat) -> str:
     stem = re.sub(r"[^\w.-]+", "-", title.strip(), flags=re.UNICODE).strip("-._")
     return f"{(stem or 'farm-assistant-response')[:80]}.{export_format}"
@@ -45,7 +70,16 @@ def _split_table_row(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
-def _markdown_table(markdown: str) -> list[list[str]]:
+def _split_table(markdown: str) -> tuple[list[list[str]], str]:
+    """
+    The first markdown table, plus the content with that table removed.
+
+    Every exporter used to be `if table: render the table ELSE render the prose`,
+    so an answer that contained both — the normal shape, since SOUL.md asks for
+    a table when comparing options — exported as the table alone and silently
+    dropped every paragraph around it. Returning the remainder lets each format
+    render both.
+    """
     lines = markdown.splitlines()
     for index in range(len(lines) - 1):
         header = lines[index].strip()
@@ -53,23 +87,42 @@ def _markdown_table(markdown: str) -> list[list[str]]:
         if "|" not in header or not separator or not all(re.fullmatch(r":?-{3,}:?", cell) for cell in separator):
             continue
         rows = [_split_table_row(header)]
+        end = index + 2
         for line in lines[index + 2:]:
             if "|" not in line:
                 break
             rows.append(_split_table_row(line))
-        return rows
-    return []
+            end += 1
+        return rows, "\n".join(lines[:index] + lines[end:]).strip()
+    return [], markdown
 
 
-def _tabular_rows(title: str, content: str) -> list[list[str]]:
-    table = _markdown_table(content)
-    if table:
-        return table
-    rows = [["Section", "Content"]]
+def _markdown_table(markdown: str) -> list[list[str]]:
+    return _split_table(markdown)[0]
+
+
+def _prose_rows(title: str, content: str) -> list[list[str]]:
+    rows = []
     for index, paragraph in enumerate(_plain_text(content).split("\n\n")):
         if paragraph.strip():
             rows.append([title if index == 0 else "", paragraph.strip()])
     return rows
+
+
+def _tabular_rows(title: str, content: str) -> list[list[str]]:
+    """
+    Table first so the file still opens as a grid, prose appended below it.
+
+    Returning the table alone lost the whole answer around it; putting the prose
+    first would shift the header row and break every naive CSV reader.
+    """
+    table, remainder = _split_table(content)
+    prose = _prose_rows(title, remainder if table else content)
+    if not table:
+        return [["Section", "Content"], *prose]
+    if not prose:
+        return table
+    return [*table, [], ["Section", "Content"], *prose]
 
 
 def _generate_csv(title: str, content: str) -> bytes:
@@ -103,7 +156,18 @@ def _generate_docx(title: str, content: str) -> bytes:
 
     document = Document()
     document.add_heading(title, level=0)
-    table_rows = _markdown_table(content)
+    table_rows, remainder = _split_table(content)
+    for raw_line in (remainder if table_rows else content).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            document.add_heading(heading.group(2), level=min(len(heading.group(1)), 6))
+        elif re.match(r"^[-*+]\s+", line):
+            document.add_paragraph(re.sub(r"^[-*+]\s+", "", line), style="List Bullet")
+        else:
+            document.add_paragraph(_plain_text(line))
     if table_rows:
         table = document.add_table(rows=1, cols=max(len(row) for row in table_rows))
         table.style = "Table Grid"
@@ -111,18 +175,6 @@ def _generate_docx(title: str, content: str) -> bytes:
             cells = table.rows[0].cells if row_index == 0 else table.add_row().cells
             for index, value in enumerate(row):
                 cells[index].text = value
-    else:
-        for raw_line in content.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            heading = re.match(r"^(#{1,6})\s+(.+)$", line)
-            if heading:
-                document.add_heading(heading.group(2), level=min(len(heading.group(1)), 6))
-            elif re.match(r"^[-*+]\s+", line):
-                document.add_paragraph(re.sub(r"^[-*+]\s+", "", line), style="List Bullet")
-            else:
-                document.add_paragraph(_plain_text(line))
     output = io.BytesIO()
     document.save(output)
     return output.getvalue()
@@ -171,8 +223,12 @@ def _generate_pdf(title: str, content: str, sources: list[dict[str, str]] | None
         Paragraph(f"Generated {date.today().strftime('%d %B %Y')}", meta_style),
         Spacer(1, 8 * mm),
     ]
-    table_rows = _markdown_table(content)
+    table_rows, remainder = _split_table(content)
+    for paragraph in (remainder if table_rows else content).split("\n\n"):
+        if paragraph.strip():
+            story.append(Paragraph(escape(_plain_text(paragraph)).replace("\n", "<br/>"), body_style))
     if table_rows:
+        story.append(Spacer(1, 4 * mm))
         column_widths = [174 * mm / max(1, len(table_rows[0]))] * len(table_rows[0])
         table = Table(
             [[Paragraph(escape(cell), body_style) for cell in row] for row in table_rows],
@@ -185,9 +241,6 @@ def _generate_pdf(title: str, content: str, sources: list[dict[str, str]] | None
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         story.append(table)
-    else:
-        for paragraph in _plain_text(content).split("\n\n"):
-            story.append(Paragraph(escape(paragraph).replace("\n", "<br/>"), body_style))
     source_items = [source for source in (sources or []) if source.get("title") or source.get("project") or source.get("url") or source.get("display_url")]
     if source_items:
         source_heading = ParagraphStyle(
@@ -230,7 +283,15 @@ def _generate_pptx(title: str, content: str) -> bytes:
     title_slide = presentation.slides.add_slide(presentation.slide_layouts[0])
     title_slide.shapes.title.text = title
     title_slide.placeholders[1].text = "Generated by Farm Assistant"
-    table_rows = _markdown_table(content)
+    table_rows, remainder = _split_table(content)
+    blocks = [b.strip() for b in _plain_text(remainder if table_rows else content).split("\n\n") if b.strip()]
+    for offset in range(0, len(blocks), 5):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = title if offset == 0 else f"{title} ({offset // 5 + 1})"
+        frame = slide.placeholders[1].text_frame
+        frame.text = blocks[offset]
+        for block in blocks[offset + 1:offset + 5]:
+            frame.add_paragraph().text = block
     if table_rows:
         columns = max(len(row) for row in table_rows)
         for offset in range(1, len(table_rows), 8):
@@ -246,17 +307,6 @@ def _generate_pptx(title: str, content: str) -> bytes:
                     for paragraph in cell.text_frame.paragraphs:
                         paragraph.font.size = Pt(12)
                         paragraph.font.bold = row_index == 0
-    else:
-        blocks = [block.strip() for block in _plain_text(content).split("\n\n") if block.strip()]
-        for offset in range(0, len(blocks), 5):
-            slide = presentation.slides.add_slide(presentation.slide_layouts[1])
-            slide.shapes.title.text = title if offset == 0 else f"{title} ({offset // 5 + 1})"
-            frame = slide.placeholders[1].text_frame
-            frame.clear()
-            for index, block in enumerate(blocks[offset:offset + 5]):
-                paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
-                paragraph.text = block[:900]
-                paragraph.font.size = Pt(18)
     output = io.BytesIO()
     presentation.save(output)
     return output.getvalue()

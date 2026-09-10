@@ -53,7 +53,14 @@ def decode_token_uuid(auth_header: Optional[str]) -> Optional[str]:
     Extract the uuid/user_id/sub claim from a Bearer JWT WITHOUT verifying it.
     Claim extraction only — never treat the result as authenticated identity
     unless it came through resolve_user_uuid().
-    """
+    
+DIVERGENCE FROM farm_assistant_um: this file is otherwise a verbatim copy, but
+the two introspection-failure paths below now DENY instead of falling back to
+the token's own claim (see _may_trust_unverified). The original behaviour is an
+impersonation window on any public host whenever Django is unhealthy. If the
+sibling service still has the original, it needs the same fix — that is a real
+finding about v2, not a divergence to reconcile away.
+"""
     if not auth_header or not auth_header.startswith("Bearer "):
         return None
     token = auth_header[7:]
@@ -156,6 +163,26 @@ def _cache_put(key: str, user_uuid: Optional[str], ttl: float) -> None:
     _verdicts[key] = (user_uuid, time.monotonic() + ttl)
 
 
+def _may_trust_unverified() -> bool:
+    """
+    May an introspection FAILURE fall back to the token's own uuid claim?
+
+    Only in bare local dev. Everywhere else a failure must DENY.
+
+    The original code chose availability: any transport error or unexpected
+    status returned the claimed uuid so the assistant kept answering through a
+    Django blip. But this uuid is the only thing deciding which agent, whose
+    memory and whose transcript a request reaches — so on a public host that
+    trade means anyone can impersonate any user for as long as Django is
+    unhealthy, by sending an unsigned `alg=none` token carrying their uuid.
+    An attacker can wait for that window, or provoke it.
+
+    The FA_ENV gate in main.py does not cover this: auth_is_verified() checks
+    that introspection is CONFIGURED, never that it is reachable.
+    """
+    return (S.FA_ENV or "local").strip().lower() == "local"
+
+
 async def resolve_user_uuid(auth_header: Optional[str]) -> Optional[str]:
     """
     Resolve the authenticated user's uuid from an Authorization header.
@@ -189,10 +216,19 @@ async def resolve_user_uuid(auth_header: Optional[str]) -> Optional[str]:
                     json={"access_token": token},
                 )
         except httpx.HTTPError as e:
-            logger.warning(
-                "Token introspection unreachable (%s); falling back to unverified decode.", e
+            if _may_trust_unverified():
+                logger.warning(
+                    "Token introspection unreachable (%s); falling back to unverified "
+                    "decode because FA_ENV=local.", e
+                )
+                return claimed_uuid
+            # Deny. Not cached: an outage must not be remembered as a verdict
+            # about this token, or recovery would lag the outage by the TTL.
+            logger.error(
+                "Token introspection unreachable (%s); REFUSING the request rather than "
+                "trusting an unverified token.", e
             )
-            return claimed_uuid
+            return None
 
         if r.status_code == 200:
             _cache_put(key, claimed_uuid, VALID_VERDICT_TTL_SECONDS)
@@ -202,8 +238,16 @@ async def resolve_user_uuid(auth_header: Optional[str]) -> Optional[str]:
             _cache_put(key, None, INVALID_VERDICT_TTL_SECONDS)
             return None
 
-        # Unexpected upstream state (5xx, proxy errors): availability first.
-        logger.warning(
-            "Token introspection returned HTTP %s; falling back to unverified decode.", r.status_code
+        # Unexpected upstream state (5xx, proxy errors). Same rule as a
+        # transport failure: identity is not something to guess at.
+        if _may_trust_unverified():
+            logger.warning(
+                "Token introspection returned HTTP %s; falling back to unverified decode "
+                "because FA_ENV=local.", r.status_code
+            )
+            return claimed_uuid
+        logger.error(
+            "Token introspection returned HTTP %s; REFUSING the request rather than "
+            "trusting an unverified token.", r.status_code
         )
-        return claimed_uuid
+        return None

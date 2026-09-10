@@ -158,9 +158,43 @@ async def patch_user_document(body: MemoryDocumentPatchIn, request: Request):
     overwrite cannot wipe the agent's memory in one keystroke.
     """
     auth_token, user_uuid, _ = await _caller(request)
+
+    # The compare-and-swap the schema documents. It was declared on
+    # MemoryDocumentPatchIn and never read, so the protection it promised —
+    # "a concurrent agent write is not silently clobbered by a stale editor
+    # buffer" — did not exist. A client that sends the count it was shown gets
+    # a 409 instead of overwriting someone else's newer text; a client that
+    # omits it keeps the old last-write-wins behaviour.
+    #
+    # This is a read-then-write check, so it closes the stale-buffer window
+    # rather than every possible interleaving; Django has no conditional-update
+    # endpoint to do better against.
+    if body.expected_char_count is not None:
+        mem = await memory_service.load(auth_token)
+        if not mem.loaded:
+            # Fail closed, and say which failure this is. Reporting "your
+            # profile changed" here would be a lie: load() fails soft to an
+            # empty profile, so an unreachable Django would otherwise refuse
+            # every save with a message blaming a concurrent edit.
+            raise HTTPException(
+                status_code=503,
+                detail="Could not check your profile's current state. Please try again.",
+            )
+        current = next(
+            (d for d in memory_service.render_documents(mem) if d.name == "USER.md"), None
+        )
+        if current is not None and current.char_count != body.expected_char_count:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Your profile changed since you loaded it "
+                    f"(now {current.char_count} characters, you expected "
+                    f"{body.expected_char_count}). Reload it and reapply your edit."
+                ),
+            )
+
     ok = await memory_service.save_about_you(auth_token, about_you=body.content)
-    if ok:
-        suggestion_service.invalidate(user_uuid)
     if not ok:
         raise HTTPException(status_code=502, detail="Could not save your profile right now.")
+    suggestion_service.invalidate(user_uuid)
     return {"status": "ok"}

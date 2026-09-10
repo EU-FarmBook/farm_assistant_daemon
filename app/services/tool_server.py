@@ -49,7 +49,30 @@ logger = logging.getLogger("farm-assistant-hermes.tool")
 # A turn that has not been touched in this long is over; its context is dropped
 # so a stale token can't be used and stale citations can't be attributed to a
 # later answer.
+#
+# IDLE, not absolute. It was measured from turn start, which is a deadline: a
+# legitimately long agent turn — six iterations of a reasoning model, each with
+# a retrieval — lost its own context mid-stream, so its tools began answering
+# "No active turn" and its citations silently vanished from the rail. Every
+# access refreshes it (see _live_context), so an in-flight turn stays alive
+# while an abandoned one still expires and stops holding a caller's JWT.
 _TURN_TTL_SECONDS = 300.0
+
+
+def _document_key(src: SourceItem) -> str:
+    """
+    Identity of the DOCUMENT a passage came from, not of the chunk.
+
+    scout returns per-chunk ids — "6977913e3ab0914817ceee35::c0" — and the
+    register keyed on `id`, so two chunks of ONE document took two citation
+    numbers and appeared twice in the source rail. The platform URL is the
+    document, which is what a citation means to a reader.
+    """
+    if src.url:
+        return src.url
+    if src.id:
+        return src.id.split("::", 1)[0]
+    return src.title or ""
 
 
 @dataclass
@@ -76,6 +99,8 @@ class TurnContext:
     note_ids: List[int] = field(default_factory=list)
     note_texts: List[str] = field(default_factory=list)
     started: float = field(default_factory=time.monotonic)
+    # Last access. The TTL is measured from here, not from `started`.
+    touched: float = field(default_factory=time.monotonic)
     sources: Optional[List[SourceItem]] = None
     version: int = 0
     remembered: List[str] = field(default_factory=list)
@@ -91,12 +116,9 @@ class TurnContext:
 
         numbers: List[int] = []
         for src in new_sources:
-            key = src.id or src.url or src.title
+            key = _document_key(src)
             existing = next(
-                (
-                    i for i, seen in enumerate(self.sources)
-                    if (seen.id or seen.url or seen.title) == key
-                ),
+                (i for i, seen in enumerate(self.sources) if _document_key(seen) == key),
                 None,
             )
             if existing is None:
@@ -112,10 +134,37 @@ class TurnContext:
 _turns: Dict[str, TurnContext] = {}
 
 
+class TurnInProgress(Exception):
+    """This profile already has a live turn; a second one would corrupt both."""
+
+    def __init__(self, profile: str):
+        self.profile = profile
+        super().__init__(f"Profile {profile} already has a turn in flight")
+
+
 def begin_turn(
     profile: str, *, auth_token: str, user_uuid: str, user_message: str = ""
 ) -> None:
-    """Open turn context for a profile, discarding anything left from before."""
+    """
+    Open turn context for a profile. Raises TurnInProgress if one is live.
+
+    This used to overwrite unconditionally ("discarding anything left from
+    before"), which is only safe if a profile can have one turn at a time — and
+    nothing enforced that. One profile is one user, so two overlapping streams
+    from the same person (two tabs, a double-clicked send, a client that does
+    not await the first) shared this single slot: the second turn's begin_turn
+    replaced the first's register, so the first stream published the SECOND
+    turn's documents beside its own [n] citations, and whichever turn called
+    end_turn first left the other's tools answering "No active turn".
+
+    Silent mis-citation is the failure this module exists to prevent (see
+    TurnContext), so a second turn is refused rather than served wrongly. The
+    caller surfaces that as 409. Note _live_context() prunes an expired context
+    first, so a turn abandoned without its finally cannot block the user past
+    the TTL.
+    """
+    if _live_context(profile) is not None:
+        raise TurnInProgress(profile)
     _turns[profile] = TurnContext(
         auth_token=auth_token, user_uuid=user_uuid, user_message=user_message,
     )
@@ -138,12 +187,19 @@ def end_turn(profile: str) -> Optional[TurnContext]:
 
 
 def _live_context(profile: str) -> Optional[TurnContext]:
+    """The profile's live turn, refreshing its idle timer, or None if expired."""
     ctx = _turns.get(profile)
     if not ctx:
         return None
-    if time.monotonic() - ctx.started > _TURN_TTL_SECONDS:
+    now = time.monotonic()
+    if now - ctx.touched > _TURN_TTL_SECONDS:
+        logger.info(
+            "Dropping idle turn context for profile=%s after %.0fs (turn ran %.0fs)",
+            profile, now - ctx.touched, now - ctx.started,
+        )
         _turns.pop(profile, None)
         return None
+    ctx.touched = now
     return ctx
 
 

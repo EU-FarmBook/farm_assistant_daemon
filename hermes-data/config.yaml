@@ -1,94 +1,31 @@
-# Hermes configuration for the EU-FarmBook v3 pilot.
-#
-# Two settings here carry the whole safety argument of this deployment. Read the
-# comments before changing either.
+_config_version: 42
 
-# Schema version of this file. WITHOUT it Hermes treats a hand-written config as
-# predating version 12 and refuses to migrate it:
-#
-#   [config-migrate] WARNING: This config predates version 12 (~2 years old) and
-#   can no longer be auto-migrated.
-#
-# which puts every setting below in doubt — including the empty toolsets and the
-# disabled built-in memory. Keep this in step with the value the running image
-# writes for a fresh profile (`grep _config_version` in a generated config).
-_config_version: 37
-
-# ── Inference ─────────────────────────────────────────────────────────
-# Mistral AI. Chosen because it is a native Hermes provider, its models are
-# reliable tool-callers, and mistral-large-latest carries 262k context — well
-# clear of Hermes' 64k floor, which the platform's own vLLM (16k in the
-# concurrency-tuned config) is not.
-#
-# The A40 is the intended end state, exactly as in mneme: this is inference on a
-# third party, and every turn ships the user's remembered profile to it. That is
-# why the pilot is internal-only. Moving back in-house means `provider: custom`
-# + OPENAI_BASE_URL at a vLLM serving with
-# `--enable-auto-tool-choice --tool-call-parser hermes` and `--max-model-len 65536`.
-# Mistral is reached as a NAMED CUSTOM PROVIDER. Two dead ends first, so nobody
-# retries them:
-#
-#   provider: mistral  -> "Unknown provider 'mistral'". It is absent from
-#                         PROVIDER_REGISTRY; the error arrives as the
-#                         assistant's message content, and the streaming path
-#                         drops it entirely, so the UI just shows an empty bubble.
-#   provider: custom   -> reads model.base_url from config, NOT OPENAI_BASE_URL.
-#                         With no base_url it calls the default endpoint without
-#                         a key: "HTTP 401: Missing Authentication header".
-#
-# The supported shape (`_get_named_custom_provider`) is a `providers.<name>`
-# entry giving the endpoint, plus `key_env` naming the environment variable that
-# holds the credential. The key itself never appears in this file — the adapter
-# writes it into each profile's own .env.
 providers:
-  mistral:
-    base_url: https://api.mistral.ai/v1
-    key_env: MISTRAL_API_KEY
+  scaleway:
+    base_url: https://api.scaleway.ai/b9c8497c-072a-47cf-b8a0-1878a92753fb/v1
+    key_env: LLM_API_KEY
+    extra_body:
+      temperature: 0.6
+      top_p: 0.95
+      presence_penalty: 0
+      chat_template_kwargs:
+        enable_thinking: false
 
-# `__EUF_MODEL__` is substituted per profile from HERMES_MODEL in the adapter's
-# .env, so trying a different model is an env change plus a restart rather than a
-# config edit and a re-render. The startup reconcile pushes it to every existing
-# profile, which makes an A/B on the same questions cheap:
-#
-#   mistral-large-latest     strong generalist, the current default
-#   magistral-small-latest   reasoning model — closer to what mneme runs, and
-#                            the config notes there argue reasoning matters most
-#                            for tool-call reliability and judgement about memory
-#   mistral-medium-latest    cheaper, for volume
 model:
-  provider: custom:mistral
-  default: __EUF_MODEL__
+  provider: custom:scaleway
+  default: qwen3.5-397b-a17b
 
 fallback_providers:
-  - provider: custom:mistral
-    model: mistral-medium-latest
+  - provider: custom:scaleway
+    model: qwen3.5-397b-a17b
 
-# ── Memory: OFF, deliberately ─────────────────────────────────────────
-# Hermes' built-in memory writes MEMORY.md and USER.md into the profile home on
-# the container volume. Personal data on an EU platform belongs in the database
-# with the rest of the account — subject to the same access control, export and
-# deletion — so the built-in store is disabled and the adapter injects memory
-# from MySQL (via django_euf_admin) on every turn, writing back through the
-# `remember_about_user` tool.
-#
-# Turning these on would silently create a SECOND, ungoverned copy of user
-# profiles on disk. Don't.
 memory:
   memory_enabled: false
   user_profile_enabled: false
 
-# ── Per-user isolation ────────────────────────────────────────────────
-# Each pilot user gets their own profile, addressed as /p/<profile>/v1/...
-# Even with built-in memory off, this keeps transcripts, sessions and agent
-# state from mingling between accounts.
 gateway:
   multiplex_profiles: true
 
-# ── Capability: one door, and it is the adapter ───────────────────────
-# No web, no terminal, no code execution, no sandboxes, no cron, no kanban, no
-# file access. The agent's entire reach is the two MCP tools below, neither of
-# which hands it a credential. This is what makes a public-facing agent
-# defensible; every toolset added here has to be justified against that.
 platform_toolsets:
   api_server: []
   cli: []
@@ -106,19 +43,12 @@ mcp_servers:
       - /opt/data/scripts/mcp_eufarmbook.py
     env:
       EUF_ADAPTER_URL: http://adapter:8100
-      # Placeholders. scripts/seed_profiles.sh substitutes them when it writes
-      # each profile's copy of this file. EUF_PROFILE must differ per profile,
-      # or the adapter cannot tell whose turn a tool call belongs to — this file
-      # as it stands is a template, not a runnable config.
-      EUF_BRIDGE_KEY: "__EUF_BRIDGE_KEY__"
-      EUF_PROFILE: "__EUF_PROFILE__"
+      EUF_BRIDGE_KEY_FILE: /opt/data/bridge.key
+      EUF_PROFILE: "default"
     connect_timeout: 30.0
     enabled: true
 
-# ── Session handling ──────────────────────────────────────────────────
-# The platform owns conversation lifecycle: a new chat sends a new
-# X-Hermes-Session-Id. Nothing here should expire transcripts behind its back.
 session_reset:
   mode: none
 
-max_tokens: 4096
+max_tokens: 16384

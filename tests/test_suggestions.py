@@ -25,7 +25,7 @@ def _mem(**kwargs) -> memory_service.UserMemory:
 
 @pytest.mark.asyncio
 async def test_defaults_when_nothing_is_remembered(monkeypatch):
-    monkeypatch.setattr(suggestion_service, "S", Settings(MISTRAL_API_KEY="k", _env_file=None))
+    monkeypatch.setattr(suggestion_service, "S", Settings(LLM_API_KEY="k", _env_file=None))
 
     async def empty(_token):
         return _mem()
@@ -39,7 +39,7 @@ async def test_defaults_when_nothing_is_remembered(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_provider_key_does_not_spend_a_call(monkeypatch):
-    monkeypatch.setattr(suggestion_service, "S", Settings(MISTRAL_API_KEY="", _env_file=None))
+    monkeypatch.setattr(suggestion_service, "S", Settings(LLM_API_KEY="", _env_file=None))
 
     async def remembered(_token):
         return _mem(about_you="I farm dairy in Brittany.")
@@ -57,7 +57,7 @@ async def test_no_provider_key_does_not_spend_a_call(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_memory_disabled_falls_back(monkeypatch):
-    monkeypatch.setattr(suggestion_service, "S", Settings(MISTRAL_API_KEY="k", _env_file=None))
+    monkeypatch.setattr(suggestion_service, "S", Settings(LLM_API_KEY="k", _env_file=None))
 
     async def paused(_token):
         return _mem(about_you="I farm dairy in Brittany.", memory_enabled=False)

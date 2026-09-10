@@ -9,12 +9,18 @@
 # session transcripts, sandboxes, lazy-installed packages — and several
 # credential files (auth.json, mcp-tokens/, gateway.pid). Committing any of
 # that would leak secrets and bloat the repo, so this is an allowlist: track
-# only the three things we author, ignore everything the agent generates.
+# only the things we author, ignore everything the agent generates.
 #
 # Note there are deliberately no memory files to track here, unlike mneme:
 # user memory lives in MySQL under django_euf_admin, never on this volume.
+#
+# config.template.yaml is the source of truth. config.yaml is GENERATED from it
+# by the adapter at startup, and the agent normalises that file in place — it is
+# tracked anyway because the agent boots first (compose depends_on) and a
+# missing one would let it create an unhardened default profile.
 hermes-data/*
 !hermes-data/.env.sample
+!hermes-data/config.template.yaml
 !hermes-data/config.yaml
 !hermes-data/SOUL.md
 !hermes-data/scripts/
@@ -52,3 +58,17 @@ Thumbs.db
 # seed_profiles.sh is required to provision a pilot user at all, and the tests
 # encode the two isolation guarantees (profile allowlist, derived memory scope)
 # that make this service safe to point at real accounts. Both belong in the repo.
+
+# ---- Local compose overrides (must not reach the deployed host) ----
+docker-compose.override.yml
+
+# ---- Markdown: only the two documents we author for people ----
+# Everything else is either generated or an agent's working note: the container
+# writes 261 skill READMEs into hermes-data/, dependency caches bring their own
+# LICENSE.md, and *.local.md is already excluded above.
+#
+# NOTE the ordering: this sits AFTER the hermes-data allowlist, so SOUL.md has
+# to be re-negated here — with .gitignore the LAST matching pattern wins.
+*.md
+!/README.md
+!/hermes-data/SOUL.md

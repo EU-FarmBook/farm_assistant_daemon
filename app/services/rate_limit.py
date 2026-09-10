@@ -31,8 +31,17 @@ logger = logging.getLogger("farm-assistant-hermes.ratelimit")
 _MINUTE = 60.0
 _DAY = 86400.0
 
-# uuid -> timestamps of recent turns, newest last.
+# "<bucket>:<uuid>" -> timestamps of recent calls, newest last.
+#
+# Two buckets, because a turn and a side-call are not interchangeable. The
+# streaming endpoint spends an agent loop; /follow-ups, /export-intent and
+# /chats/<id>/title spend one cheap completion each and are triggered BY a turn.
+# Charging them to the same allowance would have silently halved the documented
+# 6 turns/min the moment they were metered at all.
 _turns: Dict[str, Deque[float]] = {}
+
+TURN_BUCKET = "turn"
+AUX_BUCKET = "aux"
 
 # Don't let the map grow forever on a long-lived process.
 _MAX_TRACKED_USERS = 50_000
@@ -52,19 +61,21 @@ def _prune(stamps: Deque[float], now: float) -> None:
         stamps.popleft()
 
 
-def check_and_record(user_uuid: str) -> None:
+def check_and_record(user_uuid: str, *, bucket: str = TURN_BUCKET) -> None:
     """
-    Record a turn for `user_uuid`, or raise RateLimited.
+    Record one billed call for `user_uuid`, or raise RateLimited.
 
-    Called once per turn, before any model call — the point is to refuse before
-    spending, not after.
+    Called before any model call — the point is to refuse before spending, not
+    after. `bucket` keeps the agent-turn allowance separate from the cheap
+    side-completions, so metering the latter cannot consume the former.
     """
     settings = get_settings()
     if not settings.RATE_LIMIT_ENABLED or not user_uuid:
         return
 
+    key_ = f"{bucket}:{user_uuid}"
     now = time.monotonic()
-    stamps = _turns.get(user_uuid)
+    stamps = _turns.get(key_)
     if stamps is None:
         if len(_turns) >= _MAX_TRACKED_USERS:
             # Drop the coldest entry rather than grow without bound. Worst case
@@ -72,14 +83,14 @@ def check_and_record(user_uuid: str) -> None:
             # be wrong here.
             oldest = min(_turns, key=lambda k: _turns[k][-1] if _turns[k] else 0.0)
             _turns.pop(oldest, None)
-        stamps = _turns[user_uuid] = deque()
+        stamps = _turns[key_] = deque()
 
     _prune(stamps, now)
 
     per_day = settings.RATE_LIMIT_TURNS_PER_DAY
     if per_day > 0 and len(stamps) >= per_day:
         retry = _DAY - (now - stamps[0])
-        logger.info("uuid=%s hit the daily limit (%s turns)", user_uuid, per_day)
+        logger.info("uuid=%s hit the daily %s limit (%s calls)", user_uuid, bucket, per_day)
         raise RateLimited(retry, "day")
 
     per_min = settings.RATE_LIMIT_TURNS_PER_MIN
@@ -88,15 +99,15 @@ def check_and_record(user_uuid: str) -> None:
         if recent >= per_min:
             oldest_in_window = next(t for t in stamps if now - t <= _MINUTE)
             retry = _MINUTE - (now - oldest_in_window)
-            logger.info("uuid=%s hit the per-minute limit (%s turns)", user_uuid, per_min)
+            logger.info("uuid=%s hit the per-minute %s limit (%s calls)", user_uuid, bucket, per_min)
             raise RateLimited(retry, "minute")
 
     stamps.append(now)
 
 
-def usage(user_uuid: str) -> Tuple[int, int]:
-    """(turns in the last minute, turns in the last day) — for logging/debug."""
-    stamps = _turns.get(user_uuid)
+def usage(user_uuid: str, *, bucket: str = TURN_BUCKET) -> Tuple[int, int]:
+    """(calls in the last minute, calls in the last day) — for logging/debug."""
+    stamps = _turns.get(f"{bucket}:{user_uuid}")
     if not stamps:
         return 0, 0
     now = time.monotonic()

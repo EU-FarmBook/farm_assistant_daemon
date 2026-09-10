@@ -15,12 +15,19 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 
 from app.schemas import DocumentExportIn
 from app.services import attachment_service
-from app.services.document_export_service import generate_document
+from app.services.document_export_service import content_disposition, generate_document
 from app.services.attachment_service import AttachmentError
 from app.services.auth_service import decode_token_email, resolve_user_uuid
 from app.services.profile_registry import ProfileNotProvisioned, resolve_profile
 
+from app.config import get_settings
+
+S = get_settings()
 logger = logging.getLogger("farm-assistant-hermes.files")
+
+# 256 KiB: big enough that a 15 MB upload is ~60 reads, small enough that the
+# overshoot past the limit before we refuse is negligible.
+_UPLOAD_CHUNK_BYTES = 256 * 1024
 router = APIRouter(prefix="/chatbot/api/files", tags=["Files"])
 
 
@@ -44,7 +51,28 @@ async def upload_document(
     session_uuid: Optional[str] = Form(default=None),
 ):
     owner = await _owner(request)
-    payload = await file.read()
+
+    # Read in chunks and stop at the limit, instead of `await file.read()`.
+    # attachment_service.store() also checks the size, but it could only check
+    # AFTER the whole body was already resident: a single oversized upload put
+    # its full length in the adapter's memory before being told it was too big,
+    # and the adapter container has no memory limit while the agent has 4 GB.
+    # Reading to the cap bounds that to ATTACHMENT_MAX_BYTES + one chunk.
+    max_bytes = S.ATTACHMENT_MAX_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"That file is larger than {max_bytes // (1024 * 1024)} MB.",
+            )
+        chunks.append(chunk)
+    payload = b"".join(chunks)
 
     try:
         attachment = attachment_service.store(
@@ -131,7 +159,7 @@ async def export_document(body: DocumentExportIn, request: Request):
         content=document.payload,
         media_type=document.media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{document.filename}"',
+            "Content-Disposition": content_disposition(document.filename),
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },

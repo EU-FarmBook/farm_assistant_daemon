@@ -19,10 +19,17 @@ UUID_OUTSIDE = "00000000-dead-4bee-8000-000000000000"
 
 @pytest.fixture
 def volume(tmp_path):
-    """A stand-in hermes-data volume with the config template and SOUL.md."""
-    (tmp_path / "config.yaml").write_text(
+    """
+    A stand-in hermes-data volume with the config template and SOUL.md.
+
+    Note the name: the template is `config.template.yaml`. Plain `config.yaml`
+    on this path is the generated default-profile config, which the AGENT
+    rewrites — rendering must not read it.
+    """
+    (tmp_path / "config.template.yaml").write_text(
+        "# a comment the agent would strip\n"
         "mcp_servers:\n  eu-farmbook:\n    env:\n"
-        '      EUF_BRIDGE_KEY: "__EUF_BRIDGE_KEY__"\n'
+        '      EUF_BRIDGE_KEY_FILE: /opt/data/bridge.key\n'
         '      EUF_PROFILE: "__EUF_PROFILE__"\n',
         encoding="utf-8",
     )
@@ -34,7 +41,7 @@ def volume(tmp_path):
 def configured(monkeypatch, volume):
     s = Settings(
         HERMES_PILOT_UUIDS=f"{UUID_A},{UUID_B}",
-        HERMES_DATA_DIR=str(volume),
+        HERMES_DATA_DIR=str(volume), HERMES_MODEL="test-model",
         HERMES_API_KEY="bridge-key",
         _env_file=None,
     )
@@ -69,7 +76,11 @@ def test_placeholders_are_substituted_per_profile(configured, volume):
     # EUF_PROFILE is how a tool call is matched back to an in-flight turn; if two
     # profiles shared it, users' turns would cross.
     assert f'EUF_PROFILE: "{UUID_A}"' in text
-    assert 'EUF_BRIDGE_KEY: "bridge-key"' in text
+    # The rendered config must carry NO credential. It is written to a git-tracked
+    # file (hermes-data/config.yaml) and to per-profile configs at mode 0644; the
+    # bridge key belongs in bridge.key (0600), which the bridge reads per call.
+    assert "bridge-key" not in text
+    assert "EUF_BRIDGE_KEY_FILE: /opt/data/bridge.key" in text
 
 
 def test_second_turn_does_not_recreate(configured):
@@ -91,7 +102,7 @@ def test_anonymous_is_refused(configured):
 def test_naming_override_is_honoured_and_implies_roster(monkeypatch, volume):
     s = Settings(
         HERMES_PROFILE_MAP=f"{UUID_OUTSIDE}:alice",
-        HERMES_DATA_DIR=str(volume),
+        HERMES_DATA_DIR=str(volume), HERMES_MODEL="test-model",
         HERMES_API_KEY="bridge-key",
         _env_file=None,
     )
@@ -126,33 +137,38 @@ def test_missing_template_is_a_hard_failure(monkeypatch, tmp_path):
         provisioning.ensure_profile(UUID_A)
 
 
-def test_stale_bridge_key_is_repaired_in_place(configured, volume, monkeypatch):
+def test_rotating_the_key_repairs_the_profile_env_and_leaks_nothing_into_config(
+    configured, volume, monkeypatch
+):
+    """
+    The key rotates in the profile's .env (0600), never in its config.yaml.
+
+    This test used to assert the opposite — that the rendered config carried the
+    key and was rewritten on rotation. That was the bug: the same rendering goes
+    into the git-tracked hermes-data/config.yaml.
+    """
     profile_registry.resolve_profile(UUID_A)
     config = volume / "profiles" / UUID_A / "config.yaml"
-    assert 'EUF_BRIDGE_KEY: "bridge-key"' in config.read_text()
+    env = volume / "profiles" / UUID_A / ".env"
+    assert "bridge-key" not in config.read_text()
+    assert "API_SERVER_KEY=bridge-key" in env.read_text()
 
-    # Mark the profile as having some state, so we can prove it survives.
-    (volume / "profiles" / UUID_A / "sessions" / "keep.json").write_text("{}", encoding="utf-8")
-
-    # The operator corrects HERMES_API_KEY to match API_SERVER_KEY.
-    rotated = Settings(HERMES_PILOT_UUIDS=f"{UUID_A},{UUID_B}", HERMES_DATA_DIR=str(volume),
+    rotated = Settings(HERMES_PILOT_UUIDS=f"{UUID_A},{UUID_B}", HERMES_DATA_DIR=str(volume), HERMES_MODEL="test-model",
                        HERMES_API_KEY="corrected-key", _env_file=None)
     monkeypatch.setattr(provisioning, "S", rotated)
     monkeypatch.setattr(provisioning, "get_settings", lambda: rotated)
     monkeypatch.setattr(profile_registry, "get_settings", lambda: rotated)
 
     profile_registry.resolve_profile(UUID_A)
-
-    # Config repaired, state untouched — otherwise every tool call would 401
-    # against the adapter with no visible cause.
-    assert 'EUF_BRIDGE_KEY: "corrected-key"' in config.read_text()
-    assert (volume / "profiles" / UUID_A / "sessions" / "keep.json").is_file()
+    assert "API_SERVER_KEY=corrected-key" in env.read_text()
+    assert "corrected-key" not in config.read_text()
+    assert oct(env.stat().st_mode)[-3:] == "600"
 
 
 def test_profile_gets_its_own_env_with_the_scoped_keys(configured, volume, monkeypatch):
     monkeypatch.setattr(provisioning, "S", Settings(
-        HERMES_PILOT_UUIDS=UUID_A, HERMES_DATA_DIR=str(volume),
-        HERMES_API_KEY="bridge-key", MISTRAL_API_KEY="mistral-key", _env_file=None))
+        HERMES_PILOT_UUIDS=UUID_A, HERMES_DATA_DIR=str(volume), HERMES_MODEL="test-model",
+        HERMES_API_KEY="bridge-key", LLM_API_KEY="provider-key", _env_file=None))
     provisioning.ensure_profile(UUID_A)
 
     env = volume / "profiles" / UUID_A / ".env"
@@ -162,12 +178,12 @@ def test_profile_gets_its_own_env_with_the_scoped_keys(configured, volume, monke
     assert env.is_file()
     text = env.read_text()
     assert "API_SERVER_KEY=bridge-key" in text
-    # `provider: custom` reads OPENAI_* — "mistral" is not a Hermes provider id,
+    # The name must match `key_env` in the template's providers block,
     # and setting it returns "Unknown provider" AS THE ANSWER, which streams as
     # an empty completion and looks like a broken UI.
     # Must match `key_env` in the providers block of config.yaml — that pairing
     # IS the named-custom-provider contract.
-    assert "MISTRAL_API_KEY=mistral-key" in text
+    assert "LLM_API_KEY=provider-key" in text
     assert env.stat().st_mode & 0o777 == 0o600
 
 
@@ -187,7 +203,7 @@ def test_template_change_reaches_existing_profiles(configured, volume):
     # Edit the shared template the way an operator would — e.g. correcting the
     # provider. Comparing only the keys would leave the profile on the old
     # config forever, which is exactly how "Unknown provider" survived a fix.
-    template = volume / "config.yaml"
+    template = volume / "config.template.yaml"
     template.write_text("model:\n  provider: fixed\n" + template.read_text(), encoding="utf-8")
 
     assert provisioning.ensure_profile(UUID_A) is False
@@ -208,7 +224,7 @@ def test_startup_refresh_updates_every_stale_profile(configured, volume):
     provisioning.ensure_profile(UUID_A)
     provisioning.ensure_profile(UUID_B)
 
-    template = volume / "config.yaml"
+    template = volume / "config.template.yaml"
     template.write_text("model:\n  provider: fixed\n" + template.read_text(), encoding="utf-8")
 
     # A deploy should reconcile on-disk state immediately, not lazily when each
@@ -231,7 +247,7 @@ def test_startup_refresh_survives_a_broken_profile(configured, volume):
 def test_the_model_comes_from_config_not_the_template(configured, volume, monkeypatch):
     from app.config import Settings
 
-    template = volume / "config.yaml"
+    template = volume / "config.template.yaml"
     template.write_text("model:\n  default: __EUF_MODEL__\n" + template.read_text(), encoding="utf-8")
 
     s = Settings(HERMES_PILOT_UUIDS=UUID_A, HERMES_DATA_DIR=str(volume),
@@ -246,3 +262,76 @@ def test_the_model_comes_from_config_not_the_template(configured, volume, monkey
     # followed by hand-re-rendering every profile.
     assert "default: magistral-small-latest" in rendered
     assert "__EUF_MODEL__" not in rendered
+
+
+def test_unset_model_is_refused_rather_than_rendered_empty(monkeypatch, volume):
+    """
+    An empty HERMES_MODEL used to render `default:` as null, and the agent then
+    failed its first completion with a provider error that reads like a bug in
+    this service. Refuse where the message names the cause.
+    """
+    s = Settings(HERMES_PILOT_UUIDS=UUID_A, HERMES_DATA_DIR=str(volume),
+                 HERMES_API_KEY="bridge-key", HERMES_MODEL="", _env_file=None)
+    monkeypatch.setattr(provisioning, "S", s)
+    monkeypatch.setattr(provisioning, "get_settings", lambda: s)
+
+    with pytest.raises(provisioning.ProvisioningError, match="HERMES_MODEL"):
+        provisioning.ensure_profile("someone")
+    assert not (volume / "profiles" / "someone").exists()
+
+
+# --- the template the agent cannot eat ------------------------------------
+#
+# The agent container owns /opt/data/config.yaml: it is the default profile's
+# live config, and on startup the agent normalises it, bumping _config_version
+# and stripping every comment (124 lines -> 76 on 0.21.1). These pin the split
+# that keeps the documented template out of its reach.
+
+def test_rendering_ignores_the_file_the_agent_rewrites(configured, volume):
+    """A clobbered config.yaml must not change what profiles are rendered from."""
+    (volume / "config.yaml").write_text("_config_version: 42\nmodel:\n  default: junk\n",
+                                        encoding="utf-8")
+    provisioning.ensure_profile("someone")
+    rendered = (volume / "profiles" / "someone" / "config.yaml").read_text(encoding="utf-8")
+    assert "junk" not in rendered
+    assert "EUF_PROFILE: \"someone\"" in rendered
+
+
+def test_missing_template_names_the_template_not_config_yaml(configured, volume):
+    (volume / "config.template.yaml").unlink()
+    with pytest.raises(provisioning.ProvisioningError, match="config.template.yaml"):
+        provisioning.ensure_profile("someone")
+
+
+def test_default_config_is_generated_from_the_template_without_comments(configured, volume):
+    """
+    The default profile is what a request with no /p/<profile>/ prefix lands on,
+    so it must carry our hardening rather than the agent's defaults. Comments are
+    stripped so the agent's own normalisation leaves the tracked file alone.
+    """
+    assert provisioning.write_default_config() is True
+    text = (volume / "config.yaml").read_text(encoding="utf-8")
+    assert "__EUF_" not in text
+    assert 'EUF_PROFILE: "default"' in text
+    assert not [line for line in text.splitlines() if line.lstrip().startswith("#")]
+    # Idempotent: a second startup must not rewrite an already-current file.
+    assert provisioning.write_default_config() is False
+
+
+def test_default_config_is_left_alone_when_the_model_is_unset(monkeypatch, volume):
+    s = Settings(HERMES_DATA_DIR=str(volume), HERMES_API_KEY="bridge-key",
+                 HERMES_MODEL="", _env_file=None)
+    monkeypatch.setattr(provisioning, "S", s)
+    monkeypatch.setattr(provisioning, "get_settings", lambda: s)
+    (volume / "config.yaml").write_text("whatever the agent wrote\n", encoding="utf-8")
+
+    assert provisioning.write_default_config() is False
+    # Never raises at startup, and never truncates what is already there.
+    assert (volume / "config.yaml").read_text(encoding="utf-8") == "whatever the agent wrote\n"
+
+
+def test_comment_stripping_keeps_a_hash_inside_a_value():
+    stripped = provisioning._strip_comments(
+        "# leading comment\n\n\nbase_url: https://x/v1\nnote: \"a # inside a value\"\n"
+    )
+    assert stripped == 'base_url: https://x/v1\nnote: "a # inside a value"\n'

@@ -16,7 +16,7 @@ eu-farmbook-frontend  /farm-assistant-v3
    adapter (this repo, :8100)  ──►  django_euf_admin   auth, sessions, transcript, MEMORY
         │                        ──►  scout             retrieval
         ▼
-   hermes (:8642, loopback)  ──►  Mistral AI            inference
+   hermes (:8642, loopback)  ──►  Scaleway (EU)         inference
         └── MCP bridge ──► adapter /internal/tools/*
 ```
 
@@ -192,6 +192,31 @@ checking whether the terminal toolset is enabled for the platform on that port.
 Ours is not (see above). `0.0.0.0` is required for the adapter to reach the agent
 across the compose network; the port stays unpublished and off `traefik-net`.
 
+## Driving it from another application
+
+Two doors onto the same turn — same gates, same retrieval, same citation register,
+same memory:
+
+```bash
+# Streaming, when a person is watching it arrive:
+GET  /chatbot/api/chats/{session_id}/message/stream?q=...
+     -> status, sources, grounding, token*, final, timing, done
+
+# One request, one answer, when nobody is:
+POST /chatbot/api/chats/message   {"q": "...", "session_id": "..."}
+     -> {"ok", "answer", "sources", "grounding", "timing_ms"}
+```
+
+Both take `Authorization: Bearer <platform JWT>` and, when `REQUIRE_API_KEY=true`,
+`X-API-Key`. A turn measures 8-50s, so allow at least a 120s client timeout on the
+POST door; it has no progress signal, and a dropped connection loses the whole
+answer rather than part of it. The stream's exact wire contract — `token` is a bare
+string, `sources` replaces rather than appends, `data:` lines need spec reassembly —
+is published in the OpenAPI `description` for that endpoint.
+
+Browser clients need `CORS_ALLOW_ORIGINS` set; with it empty this is a
+server-to-server API and a preflight goes unanswered.
+
 ## Run it
 
 ```bash
@@ -229,26 +254,51 @@ bearer key — anyone reaching it could talk to any pilot user's agent. The adap
 is deliberately the only container on both networks: it is the boundary. Debug
 the agent through `docker compose exec`, never by exposing it.
 
-Checklist before the first pilot user:
+Checklist before the first pilot user — `.env.sample` carries these as its
+defaults, so the short version is "copy it and fill the blanks":
 
+- **two** env files, not one: `.env` (adapter) and `hermes-data/.env` (agent).
+  `HERMES_API_KEY` must equal `API_SERVER_KEY`, and `LLM_API_KEY` must be in
+  both — the agent resolves credentials in its own scope and cannot borrow the
+  adapter's
+- `FA_ENV=prd` (or `dev`) — **not** `local`. Any non-local value makes the
+  service refuse to start unless introspection is configured, which is the
+  point: a blank auth realm means tokens are decoded without verification
 - `REQUIRE_API_KEY=true` and `CHAT_API_KEYS` carries the frontend's key hash
 - `CHAT_BACKEND_URL` / `AUTH_BACKEND_URL` point at the **same** Django realm the
-  frontend logs into, or every token fails introspection
-- `HERMES_OPEN_ACCESS=true` (or, for a closed pilot, one of the roster settings)
-- `RATE_LIMIT_ENABLED=true` — the only thing bounding spend under open access
+  frontend logs into, or every token fails introspection. Blank resolves them
+  from `FA_ENV`
+- `HERMES_OPEN_ACCESS=true` (or, for a closed pilot, one of the roster settings
+  — with none of them nobody is admitted)
+- `RATE_LIMIT_ENABLED=true` — the only thing bounding spend under open access —
+  and a real `MAX_PROFILES` ceiling if the host is public
+- `HERMES_MODEL` and `MEMORY_SUMMARY_MODEL` are both set, and the second is
+  **not** a reasoning model (it is called with `max_tokens=5`; a reasoning model
+  returns empty content and the memory guard then refuses every write)
 - the `./hermes-data` volume is mounted into **both** containers — the adapter
   writes profile directories into it
 - `OPENSEARCH_*` copied from `farm_assistant_um` so v2 and v3 retrieve identically
-- the frontend's `FARM_ASSISTANT_V3_PILOT_UUIDS` matches the profile map
 
-`hermes-data/config.yaml` is a **template** — it carries `__EUF_PROFILE__` and
-`__EUF_BRIDGE_KEY__` placeholders that `seed_profiles.sh` substitutes per
-profile. The agent does not run from it directly.
+`hermes-data/config.template.yaml` is the **template** — it carries
+`__EUF_PROFILE__` and `__EUF_MODEL__` placeholders — deliberately not the bridge
+key, which the MCP server reads per call from `bridge.key` (0600) so that no
+rendered config carries a credential — and the
+adapter substitutes them per profile on that user's first turn.
+
+Its sibling `hermes-data/config.yaml` is **generated** from it and belongs to the
+agent: that path is the *default* profile's live config, and the agent rewrites
+it in place whenever the on-disk `_config_version` is behind the image's,
+stripping the comments. Editing it is pointless — edit the template. It stays
+tracked because the agent boots before the adapter, and a missing one on a fresh
+volume would let the agent create an unhardened default profile (built-in memory
+on, full platform toolset) and serve it until the next restart.
 
 ## Known limits of the pilot
 
 - **Inference is third-party.** Every turn ships the user's remembered profile to
-  Mistral AI. That is why the pilot is internal-only and why `config.yaml`
+  Scaleway Generative APIs. EU-hosted, which is why it is preferred over a US
+  provider here, but still third-party — which is why the pilot is internal-only
+  and why `config.yaml`
   documents the way back to self-hosted inference (vLLM needs
   `--enable-auto-tool-choice --tool-call-parser hermes` and `--max-model-len 65536`;
   the platform's current concurrency-tuned config at 16k is below Hermes' 64k floor).

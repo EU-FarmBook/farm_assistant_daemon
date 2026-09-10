@@ -120,7 +120,13 @@ services:
 
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.fa-hermes.rule=Host(`hermes.farm-assistant.nexavion.com`)"
+      # Host AND NOT /internal/. The rule was host-only, which published the
+      # agent's private tool surface to the internet: /internal/tools/* is not
+      # in security._PROTECTED_PREFIXES (it authenticates with the bridge key
+      # instead), so the caller-key middleware never sees it, and the comments
+      # in main.py and routers/tools.py asserting it is "never routed from
+      # outside the compose network" were false in this file.
+      - "traefik.http.routers.fa-hermes.rule=Host(`hermes.farm-assistant.nexavion.com`) && !PathPrefix(`/internal/`)"
       - "traefik.http.routers.fa-hermes.entrypoints=websecure"
       - "traefik.http.routers.fa-hermes.tls=true"
       - "traefik.http.routers.fa-hermes.tls.certresolver=letsencrypt"
@@ -131,7 +137,9 @@ services:
       - "traefik.docker.network=traefik-net"
 
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8100/health"]
+      # Readiness, not liveness: /health answers 200 whether or not the agent is
+      # reachable, so this reported green while every turn failed.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8100/health/ready"]
       interval: 30s
       timeout: 5s
       retries: 3

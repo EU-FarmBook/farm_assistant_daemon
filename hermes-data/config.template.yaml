@@ -1,0 +1,189 @@
+# Hermes configuration for the EU-FarmBook v3 pilot — THE TEMPLATE.
+#
+# Two settings here carry the whole safety argument of this deployment. Read the
+# comments before changing either.
+#
+# This file is the source of truth and the only one worth editing. The adapter
+# renders it per profile (`provisioning._render_config`), substituting
+# __EUF_PROFILE__ and __EUF_MODEL__. It deliberately carries no credential:
+# the bridge key is read at call time from /opt/data/bridge.key (0600).
+#
+# Its sibling `config.yaml` is GENERATED — do not edit that one. It is the
+# DEFAULT profile's live config, which the agent container owns and REWRITES:
+# when the on-disk _config_version is behind what the image expects, the agent
+# migrates the file in place, stripping our comments and injecting its own
+# (144 lines -> 76 going 37 -> 42 on 0.21.1). Verified by putting the version
+# back to 37 and restarting: config.yaml was rewritten, this file was not.
+#
+# It is not every boot — a restart with the version already in step leaves both
+# files alone. But docker-compose.yml pins `:latest`, so any image upgrade can
+# trigger it without warning, which is exactly why the documentation lives here
+# on a path the agent never reads. Settings survive a migration intact (memory
+# off, empty toolsets, our provider block); only the prose is lost.
+#
+# It stays generated-but-tracked on purpose: the agent boots before the adapter
+# (compose `depends_on`), so on a fresh volume a missing config.yaml would let
+# the agent create its own DEFAULT one — memory enabled, full toolset, terminal
+# included — and run with it until the next restart.
+#
+# Schema version. WITHOUT it Hermes treats a hand-written config as predating
+# version 12 and refuses to migrate it:
+#
+#   [config-migrate] WARNING: This config predates version 12 (~2 years old) and
+#   can no longer be auto-migrated.
+#
+# which puts every setting below in doubt — including the empty toolsets and the
+# disabled built-in memory. Keep it in step with the value the running image
+# writes for a fresh profile (`grep _config_version` in a generated config); the
+# 0.21.1 image normalises to 42.
+_config_version: 42
+
+# ── Inference ─────────────────────────────────────────────────────────
+# Scaleway Generative APIs, reached as a NAMED CUSTOM PROVIDER. Any
+# OpenAI-compatible endpoint fits this seam — a different hosted provider or a
+# self-hosted vLLM differ only by `base_url` and the model id.
+#
+# Scaleway is EU-hosted, which is the reason to prefer it here over a US
+# provider: every turn ships the user's remembered profile to whoever serves
+# inference, and this pilot runs on real EU-FarmBook accounts. The A40 is still
+# the intended end state, exactly as in mneme — in-house means pointing base_url
+# at a vLLM run with `--enable-auto-tool-choice --tool-call-parser hermes` and
+# `--max-model-len 65536`.
+#
+# Two dead ends, so nobody retries them:
+#
+#   provider: scaleway -> "Unknown provider '<name>'" for anything absent from
+#                         PROVIDER_REGISTRY; the error arrives as the
+#                         assistant's message content, and the streaming path
+#                         drops it entirely, so the UI just shows an empty bubble.
+#   provider: custom   -> reads model.base_url from config, NOT OPENAI_BASE_URL.
+#                         With no base_url it calls the default endpoint without
+#                         a key: "HTTP 401: Missing Authentication header".
+#
+# The supported shape (`_get_named_custom_provider`) is a `providers.<name>`
+# entry giving the endpoint, plus `key_env` naming the environment variable that
+# holds the credential. The key itself never appears in this file — the adapter
+# writes it into each profile's own .env, under exactly this name.
+#
+# NOTE the /v1: this base_url is the full API root, unlike the adapter's own
+# LLM_API_URL, which omits it because the call sites append /v1/chat/completions.
+providers:
+  scaleway:
+    base_url: https://api.scaleway.ai/b9c8497c-072a-47cf-b8a0-1878a92753fb/v1
+    key_env: LLM_API_KEY
+    # Sent with every request (`_custom_provider_request_overrides` lifts this
+    # dict onto the call). These are qwen3.5's vendor-recommended sampling
+    # params, plus the one knob that measurably cuts its thinking:
+    #
+    #   enable_thinking: false  halves it — 4827 -> 2292 chars of `reasoning`,
+    #                           1126 -> 579 completion tokens, same answer, on a
+    #                           two-sentence question. It does NOT disable
+    #                           thinking, it shortens it.
+    #   reasoning_effort: low   accepted by the API and a NO-OP on this model
+    #                           (4745 vs 4827 chars). Do not bother re-adding it.
+    #
+    # Reasoning models want temperature ~0.6, not 0 — this is a generator, not
+    # the temperature-0 judgement the adapter's own utility calls make.
+    extra_body:
+      temperature: 0.6
+      top_p: 0.95
+      presence_penalty: 0
+      chat_template_kwargs:
+        enable_thinking: false
+
+# `__EUF_MODEL__` is substituted per profile from HERMES_MODEL in the adapter's
+# .env, so trying a different model is an env change plus a restart rather than a
+# config edit and a re-render. The startup reconcile pushes it to every existing
+# profile, which makes an A/B on the same questions cheap.
+#
+# Two hard requirements on any model put here, both learned the hard way:
+#   * reliable TOOL CALLING — the agent is useless if it cannot call
+#     search_eu_farmbook, and a model that emits tool calls as prose looks like
+#     an assistant that simply never searches;
+#   * at least Hermes' 64k context floor — the platform's own vLLM at 16k is
+#     below it, which is why that route stalled.
+# List what the key can actually reach with:
+#   curl -s https://api.scaleway.ai/v1/models -H "Authorization: Bearer $LLM_API_KEY"
+model:
+  provider: custom:scaleway
+  default: __EUF_MODEL__
+
+fallback_providers:
+  - provider: custom:scaleway
+    model: __EUF_MODEL__
+
+# ── Memory: OFF, deliberately ─────────────────────────────────────────
+# Hermes' built-in memory writes MEMORY.md and USER.md into the profile home on
+# the container volume. Personal data on an EU platform belongs in the database
+# with the rest of the account — subject to the same access control, export and
+# deletion — so the built-in store is disabled and the adapter injects memory
+# from MySQL (via django_euf_admin) on every turn, writing back through the
+# `remember_about_user` tool.
+#
+# Turning these on would silently create a SECOND, ungoverned copy of user
+# profiles on disk. Don't.
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+
+# ── Per-user isolation ────────────────────────────────────────────────
+# Each pilot user gets their own profile, addressed as /p/<profile>/v1/...
+# Even with built-in memory off, this keeps transcripts, sessions and agent
+# state from mingling between accounts.
+gateway:
+  multiplex_profiles: true
+
+# ── Capability: one door, and it is the adapter ───────────────────────
+# No web, no terminal, no code execution, no sandboxes, no cron, no kanban, no
+# file access. The agent's entire reach is the two MCP tools below, neither of
+# which hands it a credential. This is what makes a public-facing agent
+# defensible; every toolset added here has to be justified against that.
+platform_toolsets:
+  api_server: []
+  cli: []
+
+code_execution:
+  enabled: false
+
+streaming:
+  enabled: true
+
+mcp_servers:
+  eu-farmbook:
+    command: python
+    args:
+      - /opt/data/scripts/mcp_eufarmbook.py
+    env:
+      EUF_ADAPTER_URL: http://adapter:8100
+      # NO SECRET HERE, deliberately. The bridge reads the key from this file on
+      # EVERY call (mcp_eufarmbook.py), so the rendered config carries a path
+      # instead of a credential:
+      #   * this template's rendering is written to hermes-data/config.yaml,
+      #     which is git-TRACKED — a substituted key would land in history on
+      #     the next `git commit -a`;
+      #   * every profiles/<id>/config.yaml is mode 0644, while the .env beside
+      #     it is 0600. The key belongs in the 0600 file, not this one.
+      # write_bridge_key() maintains /opt/data/bridge.key at 0600 on startup,
+      # and a per-call read means rotating HERMES_API_KEY takes effect without
+      # respawning the agent's long-lived MCP subprocess.
+      EUF_BRIDGE_KEY_FILE: /opt/data/bridge.key
+      # EUF_PROFILE must differ per profile, or the adapter cannot tell whose
+      # turn a tool call belongs to — this file is a template, not a runnable
+      # config, until that is substituted.
+      EUF_PROFILE: "__EUF_PROFILE__"
+    connect_timeout: 30.0
+    enabled: true
+
+# ── Session handling ──────────────────────────────────────────────────
+# The platform owns conversation lifecycle: a new chat sends a new
+# X-Hermes-Session-Id. Nothing here should expire transcripts behind its back.
+session_reset:
+  mode: none
+
+# Reasoning is billed and budgeted as completion tokens, so this is not the
+# answer length — it is thinking PLUS answer. At 4096 a multi-hop turn can spend
+# the lot on reasoning and return content: "" , which surfaces as the UI's empty
+# bubble and ask.py's "returned an empty answer". Measured: 1126 completion
+# tokens for a two-sentence question, of which the answer was ~70. Scaleway's
+# own sample for this model uses 16384.
+max_tokens: 16384

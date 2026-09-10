@@ -164,7 +164,7 @@ async def get_suggestions(auth_token: str, user_uuid: str) -> Tuple[List[Dict[st
 
     # Nothing remembered yet, or the user turned memory off: defaults, and do
     # not spend a completion discovering that.
-    if not profile or not S.MISTRAL_API_KEY:
+    if not profile or not S.LLM_API_KEY:
         return _DEFAULTS, False
 
     try:
@@ -173,8 +173,8 @@ async def get_suggestions(auth_token: str, user_uuid: str) -> Tuple[List[Dict[st
             verify=S.VERIFY_SSL,
         ) as client:
             r = await client.post(
-                f"{S.MISTRAL_API_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {S.MISTRAL_API_KEY}"},
+                f"{S.LLM_API_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {S.LLM_API_KEY}"},
                 json={
                     "model": S.MEMORY_SUMMARY_MODEL,
                     "messages": [{"role": "user", "content": _PROMPT.format(profile=profile)}],
